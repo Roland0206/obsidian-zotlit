@@ -27,7 +27,13 @@ export default class SearchIndex {
     language,
     document: {
       id: "itemID",
-      index: ["title", "creators[]:firstName", "creators[]:lastName", "date"],
+      index: [
+        "title",
+        "citekey",
+        "creators[]:firstName",
+        "creators[]:lastName",
+        "date",
+      ],
     },
     tokenize: "full",
     // @ts-ignore

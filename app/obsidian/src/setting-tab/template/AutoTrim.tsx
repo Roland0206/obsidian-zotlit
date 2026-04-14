@@ -1,18 +1,25 @@
 import { useMemoizedFn } from "ahooks";
 import type { trimConfig } from "eta-prf";
 import { useState } from "react";
+import { defaultSettingsTemplate } from "@/services/template/settings";
 import SettingsComponent, { useSetting } from "../components/Setting";
 
 type EtaTrimConfigOption = "false" | "nl" | "slurp";
 
 export default function AutoTrimSetting() {
   const [defaultLeading, applyLeading] = useSetting(
-    (s) => s.autoTrim[0],
-    (s, prev) => ({ ...prev, autoTrim: [s, prev.autoTrim[1]] }),
+    (s) => s.autoTrim?.[0] ?? defaultSettingsTemplate.autoTrim[0],
+    (s, prev) => ({
+      ...prev,
+      autoTrim: [s, prev.autoTrim?.[1] ?? defaultSettingsTemplate.autoTrim[1]],
+    }),
   );
   const [defaultEnding, applyEnding] = useSetting(
-    (s) => s.autoTrim[1],
-    (s, prev) => ({ ...prev, autoTrim: [prev.autoTrim[0], s] }),
+    (s) => s.autoTrim?.[1] ?? defaultSettingsTemplate.autoTrim[1],
+    (s, prev) => ({
+      ...prev,
+      autoTrim: [prev.autoTrim?.[0] ?? defaultSettingsTemplate.autoTrim[0], s],
+    }),
   );
 
   const [leading, setLeading] = useState<trimConfig>(defaultLeading);

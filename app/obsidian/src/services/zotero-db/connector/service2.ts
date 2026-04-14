@@ -26,7 +26,7 @@ export default class Database extends Service {
   }
 
   @calc get zoteroDataDir(): string {
-    return this.settings.current?.zoteroDataDir;
+    return this.settings.zoteroDataDir;
   }
 
   #status = DatabaseStatus.NotInitialized;

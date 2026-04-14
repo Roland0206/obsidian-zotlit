@@ -27,7 +27,7 @@ export class CitationEditorSuggest extends ZoteroItemEditorSuggest {
     cursor: EditorPosition,
     editor: Editor,
   ): EditorSuggestTriggerInfo | null {
-    if (!this.plugin.settings.current?.citationEditorSuggester) return null;
+    if (!this.plugin.settings.citationEditorSuggester) return null;
     const line = editor.getLine(cursor.line),
       sub = line.substring(0, cursor.ch);
     const match = sub.match(/[[【]@([^\]】]*)$/);

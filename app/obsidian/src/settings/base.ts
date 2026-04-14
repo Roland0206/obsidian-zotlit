@@ -1,3 +1,4 @@
+import { homedir } from "os";
 import { join } from "path";
 import type { DatabaseOptions, DatabasePaths } from "@obzt/database/api";
 import type { OptionalCleanup, Useful } from "@ophidian/core";
@@ -51,6 +52,8 @@ export function skip<T extends (...args: any[]) => OptionalCleanup | PromiseLike
   };
 }
 
+const getDefaultZoteroDataDir = () => join(homedir(), "Zotero");
+
 export class SettingsService extends _SettingsService<Settings> {
   #plugin = this.use(ZoteroPlugin);
   /** cache result */
@@ -65,31 +68,55 @@ export class SettingsService extends _SettingsService<Settings> {
   }
 
   @calc get templateDir() {
-    return this.current?.template?.folder;
+    return this.current?.template?.folder ?? getDefaultSettings().template.folder;
   }
 
   @calc get libId() {
-    return this.current?.citationLibrary;
+    return this.current?.citationLibrary ?? getDefaultSettings().citationLibrary;
+  }
+
+  @calc get citationEditorSuggester() {
+    return (
+      this.current?.citationEditorSuggester ??
+      getDefaultSettings().citationEditorSuggester
+    );
+  }
+
+  @calc get showCitekeyInSuggester() {
+    return (
+      this.current?.showCitekeyInSuggester ??
+      getDefaultSettings().showCitekeyInSuggester
+    );
   }
 
   @calc get simpleTemplates() {
-    return this.current?.template?.templates;
+    return (
+      this.current?.template?.templates ?? getDefaultSettings().template.templates
+    );
+  }
+
+  @calc get autoTrim() {
+    return this.current?.autoTrim ?? getDefaultSettings().autoTrim;
+  }
+
+  @calc get zoteroDataDir(): string {
+    return this.current?.zoteroDataDir ?? getDefaultZoteroDataDir();
   }
 
   @calc get zoteroDbPath(): string {
-    return join(this.current?.zoteroDataDir, "zotero.sqlite");
+    return join(this.zoteroDataDir, "zotero.sqlite");
   }
 
   @calc get bbtSearchDbPath(): string {
-    return join(this.current?.zoteroDataDir, "better-bibtex-search.sqlite");
+    return join(this.zoteroDataDir, "better-bibtex-search.sqlite");
   }
 
   @calc get bbtMainDbPath(): string {
-    return join(this.current?.zoteroDataDir, "better-bibtex.sqlite");
+    return join(this.zoteroDataDir, "better-bibtex.sqlite");
   }
 
   @calc get zoteroCacheDirPath(): string {
-    return join(this.current?.zoteroDataDir, "cache");
+    return join(this.zoteroDataDir, "cache");
   }
 
   @calc get dbConnParams(): [paths: DatabasePaths, opts: DatabaseOptions] {

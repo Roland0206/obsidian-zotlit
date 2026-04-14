@@ -196,7 +196,7 @@ export class AnnotationView extends DerivedFileView {
       getImgSrc: (annotation) => {
         const path = getCacheImagePath(
           annotation,
-          plugin.settings.current?.zoteroDataDir,
+          plugin.settings.zoteroDataDir,
         );
         return getFSResourcePath(path);
       },

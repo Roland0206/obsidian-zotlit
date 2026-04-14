@@ -17,3 +17,7 @@ declare namespace NodeJS {
  * — runtime helpers treat an empty map as "pre-flight bypassed".
  */
 declare const BETTER_SQLITE3_SUPPORT: Record<string, Record<string, string[]>>;
+declare const PATCHED_BUILD_COMMIT: string;
+declare const PATCHED_BUILD_REPO_URL: string;
+declare const PATCHED_BUILD_RELEASE_URL: string;
+declare const PATCHED_BUILD_LATEST_API_URL: string;

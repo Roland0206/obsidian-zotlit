@@ -31,7 +31,7 @@ export class ObsidianEta extends EtaCore {
       },
       plugins: [],
       get autoTrim() {
-        return self.settings.current?.autoTrim;
+        return self.settings.autoTrim;
       },
       get views() {
         return self.settings.templateDir;

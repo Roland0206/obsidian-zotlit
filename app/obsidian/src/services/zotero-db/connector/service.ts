@@ -24,7 +24,7 @@ export default class Database extends Service {
   server = this.use(Server);
 
   @calc get zoteroDataDir(): string {
-    return this.settings.current?.zoteroDataDir;
+    return this.settings.zoteroDataDir;
   }
 
   onload() {

@@ -1,17 +1,23 @@
 import { useState } from "react";
 import type { TplType } from "@/services/template/eta/preset";
+import { defaultSettingsTemplate } from "@/services/template/settings";
 import { useSetting } from "../components/Setting";
 import { TextComfirmSettingBase } from "../components/TextComfirm";
 import { templateDesc } from "./shared";
 
 export function SimpleTemplateEdit({ type }: { type: TplType.Embeded }) {
   const [defaultValue, applyTemplate] = useSetting(
-    (s) => s.template.templates[type],
+    (s) =>
+      s.template?.templates?.[type] ??
+      defaultSettingsTemplate.template.templates[type],
     (v, prev) => ({
       ...prev,
       template: {
-        ...prev.template,
-        templates: { ...prev.template.templates, [type]: v },
+        folder: prev.template?.folder ?? defaultSettingsTemplate.template.folder,
+        templates: {
+          ...(prev.template?.templates ?? defaultSettingsTemplate.template.templates),
+          [type]: v,
+        },
       },
     }),
   );

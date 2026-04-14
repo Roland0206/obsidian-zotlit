@@ -1,7 +1,9 @@
 import { promises } from "fs";
 import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
 const { copyFile, rename, writeFile } = promises;
+const appDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
 /**
  * @param {{ hotreload?: boolean, beta?:boolean }} config
@@ -26,9 +28,9 @@ const obPlugin = (config = {}) => ({
 
       // copy manifest.json to build dir
       if (!beta) {
-        await copyFile("manifest.json", join(outDir, "manifest.json"));
+        await copyFile(join(appDir, "manifest.json"), join(outDir, "manifest.json"));
       } else {
-        await copyFile("manifest-beta.json", join(outDir, "manifest.json"));
+        await copyFile(join(appDir, "manifest-beta.json"), join(outDir, "manifest.json"));
       }
 
       // create .hotreload if it doesn't exist

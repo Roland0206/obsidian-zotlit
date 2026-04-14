@@ -72,6 +72,7 @@ export interface SearchResult {
 
 const matchFields: string[] = [
   "title",
+  "citekey",
   "creators[]:firstName",
   "creators[]:lastName",
   "date",
@@ -88,6 +89,9 @@ function sort(resultSet: SimpleDocumentSearchResultSetUnit[]) {
       switch (field) {
         case "title":
           score *= 100;
+          break;
+        case "citekey":
+          score *= 50;
           break;
         case "creators":
         case "date":

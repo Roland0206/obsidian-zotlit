@@ -66,7 +66,7 @@ export class Template extends Service {
 
   @calc
   get autoTrim() {
-    return this.settings.current?.autoTrim;
+    return this.settings.autoTrim;
   }
 
   async loadTemplates() {

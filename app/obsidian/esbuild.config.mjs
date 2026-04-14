@@ -2,6 +2,7 @@
 import obPlugin from "./scripts/ob.esbuild.mjs";
 import { inlineWorkerPlugin } from "@aidenlx/esbuild-plugin-inline-worker";
 import { Octokit } from "@octokit/rest";
+import { execFileSync } from "child_process";
 import { build, context } from "esbuild";
 import { lessLoader } from "esbuild-plugin-less";
 import { readFile } from "fs/promises";
@@ -21,6 +22,27 @@ const myPackage = JSON.parse(await readFile("./package.json"));
 const isPreRelease = semverPrerelease(myPackage.version) !== null;
 
 const isProd = process.env?.BUILD === "production";
+
+const git = (args, fallback = "") => {
+  try {
+    return execFileSync("git", args, { encoding: "utf8" }).trim();
+  } catch {
+    return fallback;
+  }
+};
+
+const remoteUrl = git(
+  ["remote", "get-url", "origin"],
+  "https://github.com/Ascarshen/obsidian-zotlit.git",
+);
+const remoteMatch = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)(?:\.git)?$/);
+const repoPath = remoteMatch
+  ? `${remoteMatch[1]}/${remoteMatch[2]}`
+  : "Ascarshen/obsidian-zotlit";
+const patchedBuildCommit = git(["rev-parse", "--short", "HEAD"], "unknown");
+const patchedBuildRepoUrl = `https://github.com/${repoPath}`;
+const patchedBuildReleaseUrl = `${patchedBuildRepoUrl}/releases/latest`;
+const patchedBuildLatestApiUrl = `https://api.github.com/repos/${repoPath}/releases/latest`;
 
 // In PROD only: fetch the WiseLibs release for the resolved version and derive
 // a { [modules]: { [platform]: arch[] } } support matrix from its prebuilt
@@ -135,6 +157,10 @@ const baseOpts = {
     // single JSON.stringify inlines it as a JS object literal at call sites.
     // No runtime JSON.parse, no casts; type comes from `declare const` in env.d.ts.
     BETTER_SQLITE3_SUPPORT: JSON.stringify(betterSqlite3SupportMatrix),
+    PATCHED_BUILD_COMMIT: JSON.stringify(patchedBuildCommit),
+    PATCHED_BUILD_REPO_URL: JSON.stringify(patchedBuildRepoUrl),
+    PATCHED_BUILD_RELEASE_URL: JSON.stringify(patchedBuildReleaseUrl),
+    PATCHED_BUILD_LATEST_API_URL: JSON.stringify(patchedBuildLatestApiUrl),
   },
 };
 

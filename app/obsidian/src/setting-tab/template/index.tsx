@@ -1,5 +1,6 @@
 import { useContext } from "react";
 import { TemplateNames } from "@/services/template/eta/preset";
+import { defaultSettingsTemplate } from "@/services/template/settings";
 import { SettingTabCtx, normalizePath } from "../common";
 import BooleanSetting from "../components/Boolean";
 import Setting from "../components/Setting";
@@ -14,10 +15,14 @@ export default function Template() {
     <>
       <TextComfirmSetting
         name="Template location"
-        get={(s) => s.template.folder}
+        get={(s) => s.template?.folder ?? "ZtTemplates"}
         set={(v, prev) => ({
           ...prev,
-          template: { ...prev.template, folder: v },
+          template: {
+            templates:
+              prev.template?.templates ?? defaultSettingsTemplate.template.templates,
+            folder: v,
+          },
         })}
         normalize={normalizePath}
       >

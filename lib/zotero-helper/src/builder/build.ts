@@ -37,7 +37,10 @@ export async function build(
     entryPoints: [bootstrapFile],
     footer: {
       // expose bootstrap functions
-      js: `var{install,startup,shutdown,uninstall}=Hooks;`,
+      js: `function install(...args){return Hooks.install(...args)}
+function startup(...args){return Hooks.startup(...args)}
+function shutdown(...args){return Hooks.shutdown(...args)}
+function uninstall(...args){return Hooks.uninstall(...args)}`,
     },
     plugins: [
       resolvePlugin(entryPoints[0]),

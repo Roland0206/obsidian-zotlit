@@ -41,6 +41,21 @@
             "strict_max_version": "8.*"
           }
         }
+      },
+      {
+        "version": "1.0.2",
+        "update_link": "https://github.com/PKM-er/obsidian-zotlit/releases/download/zt1.0.2/zotero-obsidian-note-1.0.2.xpi",
+        "update_info_url": "https://github.com/PKM-er/obsidian-zotlit/releases/tag/zt1.0.2",
+        "applications": {
+          "gecko": {
+            "strict_min_version": "60.9",
+            "strict_max_version": "60.9"
+          },
+          "zotero": {
+            "strict_min_version": "6.999",
+            "strict_max_version": "9.*"
+          }
+        }
       }
     ]
   }

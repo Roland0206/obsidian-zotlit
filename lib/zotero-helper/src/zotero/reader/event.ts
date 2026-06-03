@@ -5,7 +5,6 @@ import {
   getReaderIframeWindow,
   getReaderInstances,
   getReaderPrototype,
-  onReaderOpen,
 } from "./utils.js";
 
 export interface ReaderEvent {
@@ -20,20 +19,14 @@ export class ReaderEventHelper extends Component {
   }
 
   public onload(): void {
-    const self = this;
-
-    self.app.log("hooking into _initIframeWindow");
+    this.app.log("hooking into Zotero Reader events");
     const reader = this.app.Reader;
     const existingReaders = getReaderInstances(reader);
 
-    // if reader is available, hook into existing iframe
-    if (this.#hookInitIframeWindow()) {
-      existingReaders.map((r) => this.#hookIframeWindow(r));
-      return;
+    if (!this.#hookInitIframeWindow()) {
+      this.#hookReaderOpen();
     }
-    this.register(
-      onReaderOpen(this.app.Reader, () => this.#hookInitIframeWindow()),
-    );
+    existingReaders.map((r) => this.#hookIframeWindow(r));
   }
 
   event = createNanoEvents<ReaderEvent>();
@@ -56,14 +49,32 @@ export class ReaderEventHelper extends Component {
     this.register(
       around(prototype as _ZoteroTypes.ReaderInstance, {
         [methodName]: (next: (...args: any[]) => any) =>
-          function (this: _ZoteroTypes.ReaderInstance) {
-            const result = next.call(this);
+          function (this: _ZoteroTypes.ReaderInstance, ...args: any[]) {
+            const result = next.apply(this, args);
             self.#hookIframeWindow(this);
             return result;
           },
       }),
     );
     return true;
+  }
+
+  #hookReaderOpen(): void {
+    const self = this;
+    this.register(
+      around(this.app.Reader as any, {
+        open: (next: (...args: any[]) => any) =>
+          function (this: _ZoteroTypes.Reader, ...args: any[]) {
+            const result = next.apply(this, args);
+            Promise.resolve(result)
+              .then((reader: _ZoteroTypes.ReaderInstance | undefined) => {
+                if (reader) self.#hookIframeWindow(reader);
+              })
+              .catch((error) => self.app.logError(error));
+            return result;
+          },
+      }),
+    );
   }
 
   public onunload(): void {
@@ -104,6 +115,7 @@ export class ReaderEventHelper extends Component {
       );
       return;
     }
+    self.observers.get(reader)?.disconnect();
     const observer = new window.MutationObserver((mutations) => {
       mutations.forEach(function ({ target, oldValue }) {
         if (
@@ -148,6 +160,11 @@ export class ReaderEventHelper extends Component {
       );
       return;
     }
+    const oldFocus = this.focusHandlers.get(reader),
+      oldBlur = this.blurHandlers.get(reader);
+    oldFocus && window.removeEventListener("focus", oldFocus);
+    oldBlur && window.removeEventListener("blur", oldBlur);
+
     const focusHandler = () =>
         this.event.emit("focus", attachmentId, _instanceID),
       blurHandler = () => this.event.emit("blur", attachmentId, _instanceID);

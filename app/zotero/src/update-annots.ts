@@ -13,18 +13,40 @@ export async function updateAnnotations(
   reader: _ZoteroTypes.ReaderInstance,
   annots: UpdateAnnot[],
 ) {
-  const iframeWindow =
-    (reader as _ZoteroTypes.ReaderInstance & {
-      _iframeWindow?: typeof globalThis | null;
-      _iframe?: { contentWindow?: typeof globalThis | null } | null;
-      _window?: typeof globalThis | null;
-    })._iframeWindow ??
-    (reader as any)._iframe?.contentWindow ??
-    (reader as any)._window ??
-    null;
-  await (
-    iframeWindow as any
-  )?.wrappedJSObject.viewerInstance._viewer._annotationsStore.updateAnnotations(
-    Components.utils.cloneInto(annots, iframeWindow),
+  const iframeWindow = getReaderIframeWindow(reader);
+  if (!iframeWindow) throw new Error("Reader iframe window not found");
+
+  const clonedAnnots = Components.utils.cloneInto(annots, iframeWindow);
+  const readerWindow = (iframeWindow as any).wrappedJSObject ?? iframeWindow;
+
+  const annotationManager = readerWindow._reader?._annotationManager;
+  if (typeof annotationManager?.updateAnnotations === "function") {
+    await annotationManager.updateAnnotations(clonedAnnots);
+    return;
+  }
+
+  const annotationsStore =
+    readerWindow.viewerInstance?._viewer?._annotationsStore;
+  if (typeof annotationsStore?.updateAnnotations === "function") {
+    await annotationsStore.updateAnnotations(clonedAnnots);
+    return;
+  }
+
+  throw new Error("Reader annotation updater not found");
+}
+
+function getReaderIframeWindow(
+  reader: _ZoteroTypes.ReaderInstance,
+): typeof globalThis | null {
+  const readerWithWindow = reader as _ZoteroTypes.ReaderInstance & {
+    _iframeWindow?: typeof globalThis | null;
+    _iframe?: { contentWindow?: typeof globalThis | null } | null;
+    _window?: typeof globalThis | null;
+  };
+  return (
+    readerWithWindow._iframeWindow ??
+    readerWithWindow._iframe?.contentWindow ??
+    readerWithWindow._window ??
+    null
   );
 }

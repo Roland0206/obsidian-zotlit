@@ -1,6 +1,6 @@
 # @zotlit/zotero
 
-Zotero 9 (Firefox 140 ESR) companion plugin. No backward-compat with Zotero 8 or earlier.
+Zotero companion plugin. Roland fork carries Zotero 8 compatibility shims while upstream targets Zotero 9 (Firefox 140 ESR).
 
 ## Commands
 

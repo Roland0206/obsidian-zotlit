@@ -1,5 +1,9 @@
 # ZotLit
 
+## Git
+
+Git workflow mode: pr-branch
+
 ## Repo shape
 
 Turborepo + pnpm monorepo for **ZotLit**, an Obsidian plugin that integrates Zotero. Workspaces are `apps/*` and `packages/*` (declared in `pnpm-workspace.yaml`).

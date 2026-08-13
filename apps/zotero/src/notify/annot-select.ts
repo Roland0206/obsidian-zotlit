@@ -1,4 +1,5 @@
 import { logger as appLogger } from "@/lib/logger";
+import { readerInstances } from "@/lib/reader-compat";
 
 import type { Send } from "./send";
 import { currentSelection, notifyEnabled } from "./shared";
@@ -112,7 +113,7 @@ export function registerAnnotSelectNotify(send: Send): Disposable {
   }
 
   function sweep(): void {
-    for (const reader of Zotero.Reader._readers) void hookReader(reader);
+    for (const reader of readerInstances()) void hookReader(reader);
   }
 
   const observer: { notify: _ZoteroTypes.Notifier.Notify } = {

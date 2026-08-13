@@ -1,5 +1,4 @@
-import { stringifyYaml } from "obsidian";
-import type { TFile } from "obsidian";
+import { stringifyYaml, TFile } from "obsidian";
 
 import {
   citekeysToCiteTemplateData,
@@ -7,6 +6,7 @@ import {
   fetchAnnotationsTemplateData,
   fetchNoteContext,
   getAnnotationsByItemId,
+  getAttachmentsByParents,
   getZoteroIdentity,
   getItemsByKey,
   resolveIndexedKeyLibrary,
@@ -38,6 +38,12 @@ import type { AttachmentImport } from "@/services/attachment-import/service";
 import type { NoteImport } from "@/services/note-import/service";
 import type { Settings } from "@/services/settings/schema";
 
+import {
+  contractFrontmatter,
+  contractSourcePath,
+  firstPdfAttachmentPath,
+  resolveAdapterPlacement,
+} from "./adapter-placement";
 import {
   buildNoteResolvers,
   fetchItemCollections,
@@ -225,11 +231,25 @@ async function createNote(
     lease.client,
     item,
   );
-  let { path, canSuffix } = resolveNotePath(ctx, item, {
-    itemTags,
-    itemCollections,
+  const placement = await resolveAdapterPlacement({
+    app: ctx.app as unknown as Parameters<
+      typeof resolveAdapterPlacement
+    >[0]["app"],
     settings,
+    item,
+    pdfPath: firstPdfAttachmentPath(
+      getAttachmentsByParents(lease.client, [item.itemID]),
+      ctx.zoteroPref,
+    ),
   });
+  const placedPath = contractSourcePath(placement);
+  let { path, canSuffix } = placedPath
+    ? { path: placedPath, canSuffix: false }
+    : resolveNotePath(ctx, item, {
+        itemTags,
+        itemCollections,
+        settings,
+      });
 
   for (let attempt = 0; ; attempt++) {
     try {
@@ -241,6 +261,8 @@ async function createNote(
         settings,
         groupIdMemo: options.groupIdMemo,
         username,
+        frontmatter: contractFrontmatter(placement),
+        overwriteExisting: placedPath !== null,
       });
     } catch (error) {
       if (
@@ -282,6 +304,8 @@ async function writeNewNote(
     settings: Readonly<Settings>;
     groupIdMemo?: GroupIDMemo;
     username: string | null;
+    frontmatter?: Record<string, unknown>;
+    overwriteExisting?: boolean;
   },
 ): Promise<TFile> {
   const { tagMemo, collectionCache, path, settings } = options;
@@ -311,12 +335,36 @@ async function writeNewNote(
   const body = ctx.template.render("note", context);
   const fm: Record<string, unknown> = {};
   applyFrontmatter(ctx, fm, { context, itemKey: item.indexedKey });
+  Object.assign(fm, options.frontmatter);
   const content = `---\n${stringifyYaml(fm)}---\n${body}`;
 
-  const file = await ctx.app.vault.create(path, content);
+  const existing = options.overwriteExisting
+    ? ctx.app.vault.getAbstractFileByPath(path)
+    : null;
+  const file =
+    existing instanceof TFile
+      ? await overwritePlacedNote(ctx, {
+          file: existing,
+          content,
+          itemKey: item.indexedKey,
+        })
+      : await ctx.app.vault.create(path, content);
   await attachmentImport.flush();
   await noteImport.flush();
   logger.debug("Created literature note", { path, itemKey: item.indexedKey });
+  return file;
+}
+
+async function overwritePlacedNote(
+  ctx: OpsContext,
+  options: { file: TFile; content: string; itemKey: string },
+): Promise<TFile> {
+  const { file, content, itemKey } = options;
+  await ctx.app.vault.process(file, () => content);
+  logger.info("Overwrote lit-management placed literature note", {
+    path: file.path,
+    itemKey,
+  });
   return file;
 }
 

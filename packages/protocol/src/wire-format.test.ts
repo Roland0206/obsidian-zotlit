@@ -263,10 +263,12 @@ describe("wire format", () => {
           "actions": [
             "open",
             "update",
+            "upsert",
           ],
           "examples": [
             "obsidian://zotlit/open?item=42&source-id=a1b2c3d4",
             "obsidian://zotlit/update?item=42&source-id=a1b2c3d4",
+            "obsidian://zotlit/upsert?item=42&source-id=a1b2c3d4",
           ],
           "params": [
             "item",

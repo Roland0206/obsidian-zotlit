@@ -98,6 +98,10 @@ export const schema = v.object({
   "note.import-folder": v.string(),
   "note.import-annotations-as-template": v.boolean(),
 
+  "lit-management.placement-enabled": v.boolean(),
+  "lit-management.command": v.string(),
+  "lit-management.config": v.string(),
+
   "server.enabled": v.boolean(),
   "server.port": serverPort,
   "server.hostname": v.string(),
@@ -147,6 +151,9 @@ export const defaults: Readonly<Settings> = Object.freeze({
   "note.frontmatter-fields": DEFAULT_FRONTMATTER_FIELDS,
   "note.import-folder": "zotero_notes",
   "note.import-annotations-as-template": false,
+  "lit-management.placement-enabled": false,
+  "lit-management.command": "lit-management",
+  "lit-management.config": ".lit-management/config.yaml",
   "server.enabled": false,
   "server.port": 9091,
   "server.hostname": "127.0.0.1",

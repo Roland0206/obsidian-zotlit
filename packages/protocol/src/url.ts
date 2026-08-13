@@ -10,11 +10,12 @@ import { isItemKey } from "@zotlit/db";
 export const PROTOCOL_NAMESPACE = "zotlit";
 
 /** Literature-note actions, following Obsidian's one-handler-per-verb convention. */
-export type ProtocolAction = "open" | "update";
+export type ProtocolAction = "open" | "update" | "upsert";
 
 export const protocolActions = [
   "open",
   "update",
+  "upsert",
 ] as const satisfies readonly ProtocolAction[];
 
 /** Full Obsidian action string for `registerObsidianProtocolHandler`. */
@@ -83,7 +84,8 @@ export function protocolSourceMatches(
 
 /**
  * Build an `obsidian://zotlit/<action>?item=<id>&source-id=<hash>` link for
- * `Zotero.launchURL`. A non-default {@link UpdateScope} adds `&scope=<scope>`.
+ * `Zotero.launchURL`. `upsert` is an update/create alias for integrations that
+ * need explicit wording. A non-default {@link UpdateScope} adds `&scope=<scope>`.
  */
 export function buildProtocolUrl(
   action: ProtocolAction,

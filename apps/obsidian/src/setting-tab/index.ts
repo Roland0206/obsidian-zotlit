@@ -173,6 +173,38 @@ export class ZotLitSettingTab extends PluginSettingTab {
         },
       },
       {
+        type: "group",
+        name: "lit-management placement",
+        items: [
+          {
+            name: "Use lit-management placement",
+            desc: "Ask lit-management for the Literature Note path before ZotLit creates a note.",
+            control: {
+              type: "toggle",
+              key: "lit-management.placement-enabled",
+            },
+          },
+          {
+            name: "lit-management command",
+            desc: "Command ZotLit runs for adapter placement.",
+            control: {
+              type: "text",
+              key: "lit-management.command",
+              placeholder: "lit-management",
+            },
+          },
+          {
+            name: "lit-management config",
+            desc: "Config path passed to lit-management, relative to the vault root.",
+            control: {
+              type: "text",
+              key: "lit-management.config",
+              placeholder: ".lit-management/config.yaml",
+            },
+          },
+        ],
+      },
+      {
         name: m.settings_update_notices_name(),
         desc: m.settings_update_notices_desc(),
         control: { type: "toggle", key: "release.notices-enabled" },

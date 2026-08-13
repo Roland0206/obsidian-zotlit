@@ -140,6 +140,7 @@ async function handleProtocol(
       await openNote(deps, ref);
       break;
     case "update":
+    case "upsert":
       await updateNote(deps, ref, query.scope);
       break;
   }

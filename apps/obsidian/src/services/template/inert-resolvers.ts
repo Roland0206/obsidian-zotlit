@@ -102,7 +102,7 @@ export function buildInertNoteResolvers(
       filePath: (a: Attachment) =>
         attachmentAbsPath(a, { dataDir, baseAttachmentPath }),
       fileLink: (a: Attachment, page) =>
-        attachmentFileLink(a, { dataDir, baseAttachmentPath }, page),
+        attachmentFileLink(a, { dataDir, baseAttachmentPath }, { page }),
       commentToMarkdown: (html: string) => {
         commentTurndown ??= createCommentTurndown(deps.Turndown);
         return commentToMarkdown(commentTurndown, html);

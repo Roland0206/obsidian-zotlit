@@ -1,4 +1,6 @@
-import { stringifyYaml, TFile } from "obsidian";
+import { dirname, relative } from "node:path/posix";
+import { FileSystemAdapter, stringifyYaml, TFile } from "obsidian";
+import type { Vault } from "obsidian";
 
 import {
   citekeysToCiteTemplateData,
@@ -30,7 +32,8 @@ import {
   buildAnnotationResolvers,
   renderAnnotations,
 } from "@/lib/annotation-render";
-import { ensureParentFolder } from "@/lib/ensure-folder";
+import { copyAttachments } from "@/lib/copy-attachments";
+import { ensureFolder, ensureParentFolder } from "@/lib/ensure-folder";
 import { inlineCitation } from "@/lib/inline-citation";
 import { getLogger } from "@/lib/log";
 import { isFileExistsError } from "@/lib/vault-errors";
@@ -40,9 +43,12 @@ import type { Settings } from "@/services/settings/schema";
 
 import {
   contractFrontmatter,
+  contractPdfFolderPath,
+  contractPdfPath,
   contractSourcePath,
   firstPdfAttachmentPath,
   resolveAdapterPlacement,
+  rewritePdfFileUrl,
 } from "./adapter-placement";
 import {
   buildNoteResolvers,
@@ -231,16 +237,17 @@ async function createNote(
     lease.client,
     item,
   );
+  const sourcePdfPath = firstPdfAttachmentPath(
+    getAttachmentsByParents(lease.client, [item.itemID]),
+    ctx.zoteroPref,
+  );
   const placement = await resolveAdapterPlacement({
     app: ctx.app as unknown as Parameters<
       typeof resolveAdapterPlacement
     >[0]["app"],
     settings,
     item,
-    pdfPath: firstPdfAttachmentPath(
-      getAttachmentsByParents(lease.client, [item.itemID]),
-      ctx.zoteroPref,
-    ),
+    pdfPath: sourcePdfPath,
   });
   const placedPath = contractSourcePath(placement);
   let { path, canSuffix } = placedPath
@@ -263,6 +270,9 @@ async function createNote(
         username,
         frontmatter: contractFrontmatter(placement),
         overwriteExisting: placedPath !== null,
+        sourcePdfPath,
+        vaultPdfPath: contractPdfPath(placement),
+        pdfFolderPath: contractPdfFolderPath(placement),
       });
     } catch (error) {
       if (
@@ -306,12 +316,17 @@ async function writeNewNote(
     username: string | null;
     frontmatter?: Record<string, unknown>;
     overwriteExisting?: boolean;
+    sourcePdfPath?: string | null;
+    vaultPdfPath?: string | null;
+    pdfFolderPath?: string;
   },
 ): Promise<TFile> {
   const { tagMemo, collectionCache, path, settings } = options;
   await ensureParentFolder(ctx.app, path);
 
-  const attachmentImport = await ctx.attachmentImport.prepare(path);
+  const attachmentImport = await ctx.attachmentImport.prepare(path, {
+    folderPath: options.pdfFolderPath,
+  });
   const noteImport = await ctx.noteImport.prepare({
     client: options.client,
     sourcePath: path,
@@ -332,7 +347,10 @@ async function writeNewNote(
     groupIdMemo: options.groupIdMemo,
     username: options.username,
   });
-  const body = ctx.template.render("note", context);
+  const body = rewritePdfFileUrl(ctx.template.render("note", context), {
+    sourcePdfPath: options.sourcePdfPath,
+    vaultPdfPath: relativePdfLinkPath(path, options.vaultPdfPath),
+  });
   const fm: Record<string, unknown> = {};
   applyFrontmatter(ctx, fm, { context, itemKey: item.indexedKey });
   Object.assign(fm, options.frontmatter);
@@ -350,9 +368,44 @@ async function writeNewNote(
         })
       : await ctx.app.vault.create(path, content);
   await attachmentImport.flush();
+  await copyPlacedPdf(ctx, {
+    sourcePdfPath: options.sourcePdfPath,
+    vaultPdfPath: options.vaultPdfPath,
+  });
   await noteImport.flush();
   logger.debug("Created literature note", { path, itemKey: item.indexedKey });
   return file;
+}
+
+function relativePdfLinkPath(
+  notePath: string,
+  vaultPdfPath?: string | null,
+): string | null {
+  if (!vaultPdfPath) return null;
+  const rel = relative(dirname(notePath), vaultPdfPath);
+  return rel.startsWith(".") ? rel : rel;
+}
+
+async function copyPlacedPdf(
+  ctx: OpsContext,
+  options: { sourcePdfPath?: string | null; vaultPdfPath?: string | null },
+): Promise<void> {
+  if (!options.sourcePdfPath || !options.vaultPdfPath) return;
+  const adapter = (ctx.app.vault as unknown as Pick<Vault, "adapter">).adapter;
+  if (!(adapter instanceof FileSystemAdapter)) {
+    throw new Error(
+      "lit-management PDF copy requires a filesystem vault adapter",
+    );
+  }
+  const slash = options.vaultPdfPath.lastIndexOf("/");
+  if (slash > 0)
+    await ensureFolder(ctx.app, options.vaultPdfPath.slice(0, slash));
+  await copyAttachments([
+    {
+      source: { kind: "path", path: options.sourcePdfPath },
+      dest: adapter.getFullPath(options.vaultPdfPath),
+    },
+  ]);
 }
 
 async function overwritePlacedNote(

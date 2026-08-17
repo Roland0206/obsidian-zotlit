@@ -18,7 +18,11 @@ import type {
   TemplateParentItemData,
 } from "@zotlit/db";
 import type { NodeDatabaseClient } from "@zotlit/db/client/node";
-import { attachmentAbsPath, resolveAnnotCachePath } from "@zotlit/db/path";
+import {
+  attachmentAbsPath,
+  parseAttachmentPath,
+  resolveAnnotCachePath,
+} from "@zotlit/db/path";
 import type { AttachmentPathContext } from "@zotlit/db/path";
 
 import { inlineCitation } from "@/lib/inline-citation";
@@ -28,7 +32,10 @@ import {
   commentToMarkdown,
   createCommentTurndown,
 } from "@/lib/turndown/comment";
-import type { AttachmentImport } from "@/services/attachment-import/service";
+import type {
+  AttachmentImport,
+  SourceOrigin,
+} from "@/services/attachment-import/service";
 import type { TemplateService } from "@/services/template/service";
 import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 
@@ -43,12 +50,47 @@ import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 export function attachmentFileLink(
   attachment: Attachment,
   ctx: AttachmentPathContext,
-  page?: number | null,
+  options?: {
+    page?: number | null;
+    attachmentImport?: Pick<AttachmentImport, "decide" | "resolveLink">;
+  },
 ): FallibleTemplateLink {
   const abs = attachmentAbsPath(attachment, ctx);
   if (!abs) return () => null;
   const filename = basename(abs) || "attachment";
-  return fileUrlLink(abs, filename, page != null ? `#page=${page}` : "");
+  const origin = attachmentSourceOrigin(attachment);
+  if (options?.attachmentImport && origin) {
+    const link = options.attachmentImport.resolveLink({
+      source: options.attachmentImport.decide(abs, origin),
+      vaultName: filename,
+    });
+    if (options.page == null) return link;
+    return (alias, subpath = `#page=${options.page}`) => link(alias, subpath);
+  }
+  return fileUrlLink(
+    abs,
+    filename,
+    options?.page != null ? `#page=${options.page}` : "",
+  );
+}
+
+function attachmentSourceOrigin(attachment: Attachment): SourceOrigin | null {
+  const parsed = parseAttachmentPath(
+    attachment.path,
+    attachment.linkMode,
+    attachment.key,
+  );
+  switch (parsed.kind) {
+    case "storage":
+      return "storage";
+    case "linked-base":
+      return "linked-base";
+    case "linked-absolute":
+      return "linked-absolute";
+    case "linked-url":
+    case "unknown":
+      return null;
+  }
 }
 
 /**
@@ -69,7 +111,14 @@ export function buildAnnotationResolvers(options: {
   return {
     filePath: (a) => attachmentAbsPath(a, { dataDir, baseAttachmentPath }),
     fileLink: (a, page) =>
-      attachmentFileLink(a, { dataDir, baseAttachmentPath }, page),
+      attachmentFileLink(
+        a,
+        { dataDir, baseAttachmentPath },
+        {
+          page,
+          attachmentImport,
+        },
+      ),
     commentToMarkdown: (html) => {
       commentTurndown ??= createCommentTurndown(TurndownService);
       return commentToMarkdown(commentTurndown, html);

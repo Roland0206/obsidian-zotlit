@@ -128,7 +128,7 @@ describe("attachmentFileLink", () => {
     const link = attachmentFileLink(
       makeAttachment({ path: "storage:paper.pdf", linkMode: 0 }),
       ctx,
-      3,
+      { page: 3 },
     );
     // default anchors to the page
     expect(link()).toBe(
@@ -142,6 +142,27 @@ describe("attachmentFileLink", () => {
     expect(link("The PDF", "#section")).toBe(
       "[The PDF](file:///data/storage/ATCH2345/paper.pdf#section)",
     );
+  });
+
+  it("uses attachment import when a copy-capable resolver is supplied", () => {
+    const decide = vi.fn(blockedDecide);
+    const resolveLink = vi.fn(
+      () => (alias?: string, subpath?: string) =>
+        `[[paper.pdf${subpath ?? ""}|${alias ?? "paper.pdf"}]]`,
+    );
+    const link = attachmentFileLink(
+      makeAttachment({ path: "storage:paper.pdf", linkMode: 0 }),
+      ctx,
+      { page: 3, attachmentImport: { decide, resolveLink } },
+    );
+
+    expect(link()).toBe("[[paper.pdf#page=3|paper.pdf]]");
+    expect(link("The PDF")).toBe("[[paper.pdf#page=3|The PDF]]");
+    expect(decide).toHaveBeenCalledWith(
+      "/data/storage/ATCH2345/paper.pdf",
+      "storage",
+    );
+    expect(resolveLink).toHaveBeenCalledTimes(1);
   });
 
   it("returns null for an unresolvable attachment", () => {

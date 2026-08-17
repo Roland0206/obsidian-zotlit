@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { dirname } from "node:path/posix";
+import { pathToFileURL } from "node:url";
 import { FileSystemAdapter, Notice, normalizePath } from "obsidian";
 import type { Vault } from "obsidian";
 
@@ -19,6 +21,7 @@ export interface AdapterPlacementContract {
     sourceResources?: string | null;
   };
   permissions?: {
+    copyPdf?: boolean;
     writeSourceNote?: boolean;
     overwriteSourceNote?: boolean;
     writeSourceResources?: boolean;
@@ -89,6 +92,36 @@ export function contractSourcePath(
 ): string | null {
   const path = contract?.paths?.sourceNote;
   return typeof path === "string" && path.trim() ? normalizePath(path) : null;
+}
+
+export function contractPdfPath(
+  contract: AdapterPlacementContract | null,
+): string | null {
+  if (contract?.state !== "ready" || contract.permissions?.copyPdf !== true) {
+    return null;
+  }
+  const path = contract.paths?.pdf;
+  return typeof path === "string" && path.trim() ? normalizePath(path) : null;
+}
+
+export function contractPdfFolderPath(
+  contract: AdapterPlacementContract | null,
+): string | undefined {
+  if (contract?.state !== "ready" || contract.permissions?.copyPdf !== true) {
+    return undefined;
+  }
+  const path = contractPdfPath(contract);
+  return path ? dirname(path) : undefined;
+}
+
+export function rewritePdfFileUrl(
+  content: string,
+  input: { sourcePdfPath?: string | null; vaultPdfPath?: string | null },
+): string {
+  if (!input.sourcePdfPath || !input.vaultPdfPath) return content;
+  return content
+    .split(pathToFileURL(input.sourcePdfPath).href)
+    .join(input.vaultPdfPath);
 }
 
 export function contractFrontmatter(

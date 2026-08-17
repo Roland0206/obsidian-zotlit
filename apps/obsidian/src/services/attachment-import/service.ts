@@ -227,24 +227,28 @@ export class AttachmentImportService extends Service<void> {
    */
   async prepare(
     notePath: string,
-    opts?: { folderCache?: Map<string, string> },
+    opts?: { folderCache?: Map<string, string>; folderPath?: string },
   ): Promise<AttachmentImport> {
     const settings = await this.#settings.loaded;
     const importEnabled = settings["attachment.import"];
     let folderPath: string | null = null;
     if (importEnabled) {
-      const cache = opts?.folderCache;
-      const cacheKey = noteDirname(notePath);
-      const cached = cache?.get(cacheKey);
-      if (cached !== undefined) {
-        folderPath = cached;
+      if (opts?.folderPath !== undefined) {
+        folderPath = opts.folderPath;
       } else {
-        folderPath = await resolveAttachmentFolderPath(
-          this.#app,
-          settings["attachment.folder-path"],
-          notePath,
-        );
-        cache?.set(cacheKey, folderPath);
+        const cache = opts?.folderCache;
+        const cacheKey = noteDirname(notePath);
+        const cached = cache?.get(cacheKey);
+        if (cached !== undefined) {
+          folderPath = cached;
+        } else {
+          folderPath = await resolveAttachmentFolderPath(
+            this.#app,
+            settings["attachment.folder-path"],
+            notePath,
+          );
+          cache?.set(cacheKey, folderPath);
+        }
       }
       await this.#rebuildRoots();
     }

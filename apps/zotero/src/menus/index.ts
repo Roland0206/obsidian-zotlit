@@ -2,7 +2,6 @@ import { logger as appLogger } from "@/lib/logger";
 
 import { registerCollectionMenu } from "./collection.js";
 import { registerItemMenu } from "./item.js";
-import { registerLegacyMenus } from "./legacy.js";
 import { registerReaderAnnotationMenu } from "./reader-annotation.js";
 import { registerReaderPageMenu } from "./reader-page.js";
 
@@ -18,7 +17,6 @@ export async function registerMenus(
   pluginID: string,
 ): Promise<AsyncDisposable> {
   logger.info("registering menus", { pluginID });
-  if (!Zotero.MenuManager) return registerLegacyMenus();
   await using stack = new AsyncDisposableStack();
   stack.use(registerItemMenu(pluginID));
   stack.use(registerCollectionMenu(pluginID));

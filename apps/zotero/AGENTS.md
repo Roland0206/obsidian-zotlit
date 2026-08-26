@@ -1,6 +1,6 @@
 # @zotlit/zotero
 
-Zotero 8, Zotero 9, and Zotero 10 companion plugin. Roland fork carries Zotero 8 compatibility shims; Zotero 9 and Zotero 10 both use Firefox 140 ESR. `strict_min_version` is `8.0` and `strict_max_version` is `10.*`, both in `package.json` under `zotero`.
+Zotero 9 and Zotero 10 (both Firefox 140 ESR) companion plugin. `strict_min_version` is `9.0` and `strict_max_version` is `10.*`, both in `package.json` under `zotero`. No backward-compat with Zotero 8 or earlier.
 
 ## Commands
 

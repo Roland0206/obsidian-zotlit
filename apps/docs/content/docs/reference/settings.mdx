@@ -2,11 +2,12 @@
 title: "Settings"
 description: "Every ZotLit setting: key, label, default value, and location in the settings tab."
 introduced: "2.0.0"
-updated: "2.1.0-beta.0"
+updated: "2.1.0"
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Card, Cards } from "fumadocs-ui/components/card";
+import { Command } from "@/components/command";
 
 This reference lists every ZotLit setting, its default, dependencies, and storage scope.
 
@@ -16,10 +17,49 @@ Open settings from **Settings > Community plugins > ZotLit**.
 
 The hub page shows when you first open ZotLit settings.
 
-| Label                      | Key                       | Control                                | Default       |
-| -------------------------- | ------------------------- | -------------------------------------- | ------------- |
-| **Default library**        | `zotero.citation-library` | Dropdown (lists your Zotero libraries) | My Library    |
-| **Literature note folder** | `note.literature-folder`  | Folder picker                          | `literatures` |
+| Label                      | Key                      | Control                                     | Default       |
+| -------------------------- | ------------------------ | ------------------------------------------- | ------------- |
+| **Library scope**          | `zotero.library-scope`   | All libraries, or an editable selected list | All libraries |
+| **Literature note folder** | `note.literature-folder` | Folder picker                               | `literatures` |
+
+### Library scope [#library-scope]
+
+The libraries ZotLit uses for item search, citation key resolution, and library-wide commands. Everything that already names one item, note, or library keeps that exact target: a menu entry or link from Zotero runs against the library it came from, and a literature note stays tied to its own item.
+
+**All libraries** follows your Zotero database. A group library you join later is in scope at once, read-only groups included, and a group you leave drops out.
+
+**Selected libraries** stays exactly as you set it. A group library you join later stays out of scope until you add it.
+
+**Add library** offers the libraries you have not selected yet, and each row's delete action removes one. The last remaining row has no delete action, so the list is never empty.
+
+Switching to **Selected libraries** starts at **My Library**. Switching to **All libraries** discards the list you had.
+
+ZotLit stores each selection as a stable reference: **My Library** as itself, a group library by its Zotero group ID. Group names and Zotero's internal library numbers are never stored, so a renamed group keeps its place in the list and shows its current name.
+
+#### An unavailable library [#unavailable-library]
+
+A selected group can be missing from the connected Zotero database, because you left the group or because you connected a different Zotero data directory. It keeps its place in the list and shows as **Group `{ID}`** with the note "Unavailable in this Zotero database." Rejoin the group to restore its name, or delete the row to drop it.
+
+Search, citation key resolution, and library-wide commands run over the libraries that are available. A library-wide command states how many selected libraries it had to skip.
+
+#### While the database is unavailable [#database-unavailable]
+
+ZotLit lists your libraries from the connected Zotero database. While that database is unreadable, the library scope controls are disabled and show "Open the Zotero database to edit the library scope."
+
+Your saved scope is untouched. See [Fix Zotero changes that do not appear](/docs/how-to/fix-stale-data) for the connection itself.
+
+#### Recovery from an invalid scope [#invalid-scope]
+
+ZotLit can fail to read a saved scope, after an edited `data.json` or a vault synced from a newer ZotLit. It keeps the broken value on disk rather than overwriting it, and an unrelated settings change leaves that value in place.
+
+ZotLit shows the notice "Library scope is invalid" once, marks the setting with a standing warning, and searches **My Library** alone until you repair the setting. The first change you make here writes over the broken value and clears both warnings.
+
+<Callout type="info" title="What an upgrade sets">
+  An upgrade from an earlier ZotLit version starts at **Selected libraries**
+  with **My Library**, whatever library you had selected before. Widen the scope
+  here to search your group libraries. A fresh installation starts at **All
+  libraries**.
+</Callout>
 
 ## Citations
 
@@ -48,7 +88,7 @@ Open this page from **Settings > ZotLit > Citations**.
 
 **Wikilink citations:** Include unaliased links to literature notes in the references sidebar and ZotLit’s in-text features. Heading links, block links, and invalid citation fragments stay as links. This setting does not change export.
 
-Both settings can be off. ZotLit's internal Citation Index remains active, and **Reset citation index** remains available under Diagnostics.
+Both settings can be off. ZotLit's internal Citation Index remains active, and **Reset citation index** remains available under Maintenance.
 
 ### In-text citations
 
@@ -91,6 +131,7 @@ Each toggle gates the popover in its own editing mode, and the modifier is read 
 | Label                             | Key                         | Control                           | Default                       | Dependency             | Storage    |
 | --------------------------------- | --------------------------- | --------------------------------- | ----------------------------- | ---------------------- | ---------- |
 | **Citation and references style** | `citation.references-style` | Dropdown (lists installed styles) | Default (Chicago author-date) | Zotero style directory | Synced     |
+| **Citation locale**               | `citation.locale`           | Text                              | Style default                 | None                   | Synced     |
 | **Pandoc engine**                 | None                        | Install or uninstall action       | Not installed                 | Network for install    | Per device |
 
 **Citation and references style:** CSL style used to format in-text citations and the references sidebar. Install and manage styles in Zotero.
@@ -103,6 +144,32 @@ An unavailable style remains selected. In-text citations stay native, and the Re
 
 The first formatting attempt shows this notice once per plugin lifecycle: "The selected citation and references style isn’t installed in Zotero." Its **Open settings** action opens the Citations page.
 
+A note can select its own style with the `zotlit-csl` property. The property takes the CSL style ID of a style installed in Zotero. Every other note keeps the vault selection.
+
+That note uses its own style for in-text citations, the References Sidebar, the Citation Popover, and the copied bibliography. The built-in export dialog opens on the same style. The dialog holds a style you pick there for that run alone, and never writes it to the note.
+
+A note whose `zotlit-csl` names an unavailable style stops instead of using the vault selection. Its citations stay native. The References Sidebar shows its minimal list with this banner, and the copy action stays unavailable.
+
+> This note's citation and references style is unavailable
+
+Built-in export of that note opens on the same unavailable style and stops with a notice, unless you pick an available style in the dialog.
+
+An empty `zotlit-csl` property stops the note the same way, and its built-in export stops before the dialog opens. Remove the property to use the vault selection again.
+
+**Citation locale:** Sets the language for citation terms, dates, names, and sorting. Leave empty to use the language the selected style declares.
+
+The field takes a language tag such as `en-US`, `de`, or `zh-CN`. ZotLit rejects any other form and shows this message: "Enter a language code such as en-US, de, or zh-CN."
+
+The locale applies to in-text citations, the References Sidebar, the Citation Popover, the copied bibliography, and built-in export. Built-in export applies it to citation processing only: a note that declares Pandoc `lang` keeps that language, and a note that declares none stays without one.
+
+A note can set its own locale with the standard Pandoc `lang` property. The property takes the same language tags this field takes. It overrides this setting for that note across in-text citations, the References Sidebar, the Citation Popover, the copied bibliography, and built-in export. Built-in export also passes it to Pandoc as the exported document's own language.
+
+A note whose `lang` is not a language tag stops instead of using this setting. Its citations stay native. The References Sidebar shows its minimal list with this banner, the copy action stays unavailable, and built-in export stops before the dialog opens.
+
+> This note's document language is invalid
+
+Both note properties are set from the <Command inline>ZotLit: Set citation presentation</Command> command, which is also in the note's **More options** menu. See [Commands](/docs/reference/commands).
+
 **Pandoc engine:** Formats in-text citations, references, and exports. Installation applies to every vault on this device.
 
 Before installation, its status is: "Not installed. References stay a plain list until you install it." This supported state does not show a lifecycle notice.
@@ -111,14 +178,17 @@ Before installation, its status is: "Not installed. References stay a plain list
 
 These rows support conversion with a user-installed Pandoc CLI. They are separate from ZotLit's built-in export command.
 
-| Label                       | Key  | Control                           | Default | Dependency               | Storage                    |
-| --------------------------- | ---- | --------------------------------- | ------- | ------------------------ | -------------------------- |
-| **Pandoc CLI guide**        | None | Read-only guide action            | None    | None                     | Per plugin installation    |
-| **Pandoc integration pair** | None | **Save integration files** action | None    | A selected output folder | Writes the selected folder |
+| Label                        | Key  | Control                           | Default | Dependency               | Storage                    |
+| ---------------------------- | ---- | --------------------------------- | ------- | ------------------------ | -------------------------- |
+| **Pandoc citation tutorial** | None | **Open tutorial** action          | None    | Network to open          | None                       |
+| **Pandoc integration pair**  | None | **Save integration files** action | None    | A selected output folder | Writes the selected folder |
+| **Pandoc CLI guide**         | None | Read-only guide action            | None    | None                     | Per plugin installation    |
 
-**Pandoc CLI guide:** ZotLit reference for the native Pandoc workflow.
+**Pandoc citation tutorial:** Opens [Build a Pandoc citation workflow](/docs/tutorial/pandoc-citation-workflow) at its stable URL.
 
 **Pandoc integration pair:** Save the version-matched filter and defaults file to one folder. Keep both files together.
+
+**Pandoc CLI guide:** ZotLit reference for the native Pandoc workflow.
 
 **Save integration files** writes the pair to the folder you select. See [Export a note with citations](/docs/how-to/export-note-with-citations) for ZotLit's built-in workflow.
 
@@ -144,9 +214,9 @@ These rows support conversion with a user-installed Pandoc CLI. They are separat
 | Option           | Behavior                                                                                                                                        |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Auto             | Picks the best available mode for your platform. See [How ZotLit connects to Zotero](/docs/concepts/how-zotlit-connects-to-zotero) for details. |
-| Reflink clone    | Fast, lightweight snapshot. Default on macOS.                                                                                                   |
+| Reflink clone    | Fast, lightweight snapshot. What Auto uses on macOS and Linux filesystems that support cloning.                                                 |
 | Full copy        | Byte-for-byte copy of the database file. Works on any filesystem but slower and uses more disk space. Auto does not select this mode.           |
-| Immutable source | Reads the database file directly. Default on Windows and Linux. Recent edits in Zotero may not appear immediately.                              |
+| Immutable source | Reads the database file directly. What Auto falls back to when cloning is unavailable. Recent edits in Zotero may not appear immediately.       |
 
 ### Advanced
 
@@ -211,6 +281,7 @@ Actions: **Add field**, **Reset to default** (reverts the full list).
 | Label                                | Key                                   | Control       | Default        |
 | ------------------------------------ | ------------------------------------- | ------------- | -------------- |
 | **Imported note folder**             | `note.import-folder`                  | Folder picker | `zotero_notes` |
+| **Use colored highlight syntax**     | `note.import-colored-highlights`      | Toggle        | Off            |
 | **Render annotations from template** | `note.import-annotations-as-template` | Toggle        | Off            |
 
 ## Attachments
@@ -259,12 +330,15 @@ Actions: **Add folder** (opens a folder picker), and delete on each row. Approva
 | ------------ | ----------------- | ------- | ----------- |
 | **Hostname** | `server.hostname` | Text    | `127.0.0.1` |
 
-## Diagnostics
+## Maintenance
 
-| Label                  | Key           | Control  | Default |
-| ---------------------- | ------------- | -------- | ------- |
-| **Log level**          | `log.level`   | Dropdown | info    |
-| **Write logs to file** | `log.to-file` | Toggle   | Off     |
+| Label                  | Key                       | Control  | Default |
+| ---------------------- | ------------------------- | -------- | ------- |
+| **Update notices**     | `release.notices-enabled` | Toggle   | On      |
+| **Log level**          | `log.level`               | Dropdown | info    |
+| **Write logs to file** | `log.to-file`             | Toggle   | Off     |
+
+**Update notices** shows a notice linking to the release notes after ZotLit updates.
 
 **Log level** options: Off, trace, debug, info, warning, error, fatal.
 

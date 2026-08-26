@@ -1,12 +1,14 @@
 import type { IconName } from "obsidian";
 import type { MouseEvent, ReactNode } from "react";
 
+import { AmbiguousCandidates } from "@/components/ambiguous-candidates";
 import { Button } from "@/components/obsidian/button";
 import { IconButton } from "@/components/obsidian/icon-button";
 import { SidebarToolbar } from "@/components/sidebar-toolbar";
 import * as m from "@/lib/i18n/generated/messages";
 import { cn, tooltipAttrs } from "@/lib/utils";
 import type { ReferenceSource } from "@/services/citation-index/service";
+import type { UnusableProperty } from "@/services/pandoc/document-presentation";
 import { InlineContent } from "@/services/pandoc/inline-content";
 import type {
   PandocEngineFailure,
@@ -29,6 +31,9 @@ export function References() {
   const listMode = useReferencesStore((s) => s.listMode);
   const engine = useReferencesStore((s) => s.engine);
   const formattingFailed = useReferencesStore((s) => s.formattingFailed);
+  const documentPresentationError = useReferencesStore(
+    (s) => s.documentPresentationError,
+  );
   const dbReady = useReferencesStore((s) => s.dbReady);
   const numbered = listMode.kind === "minimal";
   const serials = listMode.kind === "bibliography" && listMode.entrySerials;
@@ -47,6 +52,17 @@ export function References() {
         {/* The banners head this region rather than the pane, so they travel
             with the list they describe and the toolbar keeps its own place. */}
         <EngineSurface status={engine} />
+        {/* The note itself is the repair, so this banner stands in front of
+            the vault-level guidance the failure banner gives, and it names the
+            property on that note the reader repairs. */}
+        {documentPresentationError !== null && engine.kind === "installed" && (
+          <Banner
+            tone="warning"
+            title={documentPresentationTitle(documentPresentationError)}
+          >
+            {documentPresentationBody(documentPresentationError)}
+          </Banner>
+        )}
         {formattingFailed && engine.kind === "installed" && (
           <Banner tone="warning" title={m.references_format_failed_title()}>
             {m.references_format_failed_body()}
@@ -122,6 +138,19 @@ function Toolbar() {
       </SidebarToolbar.Actions>
     </SidebarToolbar>
   );
+}
+
+/** The note property a document-scoped presentation failure asks the reader to repair. */
+function documentPresentationTitle(property: UnusableProperty): string {
+  return property === "language"
+    ? m.references_document_language_failed_title()
+    : m.references_document_style_failed_title();
+}
+
+function documentPresentationBody(property: UnusableProperty): string {
+  return property === "language"
+    ? m.references_document_language_failed_body()
+    : m.references_document_style_failed_body();
 }
 
 /** What the disabled copy action names in its tooltip as the thing to fix. */
@@ -343,6 +372,16 @@ function referencePresentation(
         noteDisabled: true,
         source: undefined,
       };
+    // The key names several Items, so no one note is this row's to open: the
+    // whole-row action stays disabled and the candidates say why.
+    case "ambiguous":
+      return {
+        gutter: "⚠",
+        warning: true,
+        noteLabel: m.references_open_note_ambiguous(),
+        noteDisabled: true,
+        source: undefined,
+      };
     case "malformed":
       return {
         gutter: "⚠",
@@ -383,6 +422,20 @@ function ReferenceBody({ entry }: { entry: ReferenceEntry }) {
         <span className={cn(textClass, "zt:text-destructive")}>
           {m.references_citekey_unresolved({ citekey: entry.citekey })}
         </span>
+      );
+    // The candidates stand in place of the entry the key names none of, so the
+    // reader can tell the Items apart in Zotero and fix the key there.
+    case "ambiguous":
+      return (
+        <div className="zt:flex zt:flex-col zt:gap-1">
+          <span className={cn(textClass, "zt:text-destructive")}>
+            {m.references_citekey_ambiguous({ citekey: entry.citekey })}
+          </span>
+          <AmbiguousCandidates
+            candidates={entry.candidates}
+            textClass={textClass}
+          />
+        </div>
       );
     case "malformed":
       return (

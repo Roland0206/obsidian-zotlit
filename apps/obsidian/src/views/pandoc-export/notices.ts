@@ -27,11 +27,15 @@ export function showEngineMissing(openSettings: () => void): void {
 }
 
 /**
- * Everything that stops an export: the conversion's own failures, plus the
- * destination write, which happens after the engine has already answered.
+ * Everything that stops an export: the conversion's own failures, the note's
+ * own unusable Citation Presentation, which stops the run before the engine sees
+ * it, plus the destination write, which happens after the engine has already
+ * answered.
  */
 export type ExportProblem =
   | ExportFailure
+  | { kind: "document-style-invalid" }
+  | { kind: "document-language-invalid" }
   | { kind: "destination-unwritable"; detail: string };
 
 /** One message per failure arm, each naming the situation and its fix. */
@@ -63,9 +67,16 @@ export function showExportFailure(failure: ExportProblem): void {
             failure.linkpaths,
           );
           break;
-        case "zotero-not-running":
+        case "zotero-unreachable":
           renderer.addText(
-            m.pandoc_export_error_zotero_closed({ port: failure.port }),
+            m.pandoc_export_error_zotero_unreachable({ port: failure.port }),
+          );
+          break;
+        case "zotero-port-automatic":
+          renderer.addText(
+            m.pandoc_export_error_zotero_port_automatic({
+              pref: failure.pref,
+            }),
           );
           break;
         case "local-api-disabled":
@@ -85,6 +96,12 @@ export function showExportFailure(failure: ExportProblem): void {
           renderer.addText(
             m.pandoc_export_error_engine({ detail: failure.detail }),
           );
+          break;
+        case "document-style-invalid":
+          renderer.addText(m.pandoc_export_error_document_style());
+          break;
+        case "document-language-invalid":
+          renderer.addText(m.pandoc_export_error_document_language());
           break;
         case "destination-unwritable":
           renderer.addText(

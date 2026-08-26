@@ -4,6 +4,7 @@ import type { SettingDefinitionItem } from "obsidian";
 import type { LanguagePackLifecycle } from "@/lib/i18n";
 import * as m from "@/lib/i18n/generated/messages";
 import type { DatabaseService } from "@/services/database/service";
+import type { LibraryScopeService } from "@/services/library-scope/service";
 import type {
   SettingsPatch,
   SettingsService,
@@ -22,14 +23,15 @@ import type {
   SettingsKey,
   SettingTabContext,
 } from "./context";
-import { databasePageItems, libraryDefinition } from "./database";
+import { databasePageItems } from "./database";
+import { libraryPage } from "./library-scope";
+import { liveUpdatesPageItems } from "./live-updates";
 import {
   decodeLogLevel,
-  diagnosticsPageItems,
   encodeLogLevel,
   LOG_LEVEL_KEY,
-} from "./diagnostics";
-import { liveUpdatesPageItems } from "./live-updates";
+  maintenancePageItems,
+} from "./maintenance";
 import { noteImportPageItems } from "./note-import";
 import { defaultPlaceholder } from "./placeholder";
 import { resourcesGroup } from "./resources";
@@ -44,6 +46,7 @@ export interface ZotLitSettingTabOptions {
   plugin: ZotLitPlugin;
   settings: SettingsService;
   db: DatabaseService;
+  libraryScope: LibraryScopeService;
   zoteroPref: ZoteroPrefService;
   attachmentImport: AttachmentImportActions;
   citationIndex: CitationIndexActions;
@@ -57,6 +60,7 @@ export class ZotLitSettingTab extends PluginSettingTab {
   readonly #plugin: ZotLitPlugin;
   readonly #settings: SettingsService;
   readonly #db: DatabaseService;
+  readonly #libraryScope: LibraryScopeService;
   readonly #zoteroPref: ZoteroPrefService;
   readonly #attachmentImport: AttachmentImportActions;
   readonly #citationIndex: CitationIndexActions;
@@ -68,6 +72,7 @@ export class ZotLitSettingTab extends PluginSettingTab {
     plugin,
     settings,
     db,
+    libraryScope,
     zoteroPref,
     attachmentImport,
     citationIndex,
@@ -80,6 +85,7 @@ export class ZotLitSettingTab extends PluginSettingTab {
     this.#plugin = plugin;
     this.#settings = settings;
     this.#db = db;
+    this.#libraryScope = libraryScope;
     this.#zoteroPref = zoteroPref;
     this.#attachmentImport = attachmentImport;
     this.#citationIndex = citationIndex;
@@ -92,6 +98,9 @@ export class ZotLitSettingTab extends PluginSettingTab {
     );
     plugin.register(languagePack.subscribe(() => this.#requestUpdate()));
     plugin.register(pandocEngine.subscribe(() => this.#requestUpdate()));
+    // Library scope rows are built from the resolved scope, so a database
+    // refresh, a group rename, and a repair each rebuild them.
+    plugin.register(libraryScope.on("changed", () => this.#requestUpdate()));
 
     // Settings: the frontmatter list is structural — its edits add/remove rows,
     // so the tab must re-render. Reference identity changes only when that key
@@ -146,6 +155,7 @@ export class ZotLitSettingTab extends PluginSettingTab {
       plugin: this.#plugin,
       settings: this.#settings,
       db: this.#db,
+      libraryScope: this.#libraryScope,
       zoteroPref: this.#zoteroPref,
       attachmentImport: this.#attachmentImport,
       citationIndex: this.#citationIndex,
@@ -162,7 +172,6 @@ export class ZotLitSettingTab extends PluginSettingTab {
       resourcesGroup(ctx),
 
       // Hub — the most-used settings, no top-level heading (per Obsidian style).
-      libraryDefinition(ctx),
       {
         name: m.settings_note_folder_name(),
         desc: m.settings_note_folder_desc(),
@@ -204,12 +213,6 @@ export class ZotLitSettingTab extends PluginSettingTab {
           },
         ],
       },
-      {
-        name: m.settings_update_notices_name(),
-        desc: m.settings_update_notices_desc(),
-        control: { type: "toggle", key: "release.notices-enabled" },
-      },
-
       // Self-contained domains live on navigable sub-pages, grouped apart
       // from the hub items above so the page rows read as their own section.
       {
@@ -227,6 +230,7 @@ export class ZotLitSettingTab extends PluginSettingTab {
             desc: m.settings_page_database_desc(),
             items: databasePageItems(ctx),
           },
+          libraryPage(ctx),
           {
             type: "page",
             name: m.settings_page_templates(),
@@ -253,9 +257,9 @@ export class ZotLitSettingTab extends PluginSettingTab {
           },
           {
             type: "page",
-            name: m.settings_page_diagnostics(),
-            desc: m.settings_page_diagnostics_desc(),
-            items: diagnosticsPageItems(ctx),
+            name: m.settings_page_maintenance(),
+            desc: m.settings_page_maintenance_desc(),
+            items: maintenancePageItems(ctx),
           },
         ],
       },

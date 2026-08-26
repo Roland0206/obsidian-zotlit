@@ -237,10 +237,12 @@ async function createNote(
     lease.client,
     item,
   );
-  const sourcePdfPath = firstPdfAttachmentPath(
-    getAttachmentsByParents(lease.client, [item.itemID]),
-    ctx.zoteroPref,
-  );
+  const sourcePdfPath = settings["lit-management.placement-enabled"]
+    ? firstPdfAttachmentPath(
+        getAttachmentsByParents(lease.client, [item.itemID]),
+        ctx.zoteroPref,
+      )
+    : null;
   const placement = await resolveAdapterPlacement({
     app: ctx.app as unknown as Parameters<
       typeof resolveAdapterPlacement

@@ -1,14 +1,15 @@
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ZOTERO_DB_READ_PARENT_DIRNAME } from "@/lib/constants";
 import { defaults } from "@/services/settings/schema";
 import type { Settings } from "@/services/settings/schema";
 import type { SettingsService } from "@/services/settings/service";
 import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 
-import { buildSqliteUri, prepareRead } from "./read-source";
+import { buildSqliteUri, prepareRead, staleWalReason } from "./read-source";
 import type {
   EffectiveReadMode,
   PreparedRead,
@@ -50,10 +51,43 @@ describe("read-source", () => {
     });
   });
 
-  it("copies the main database and WAL into an owned temp dir", async () => {
+  it("reports a stale-WAL reason for a non-empty WAL", async () => {
+    const source = join(dir, "zotero.sqlite");
+    await writeFile(`${source}-wal`, "wal");
+
+    await expect(staleWalReason(source)).resolves.toBe("wal-not-replayed");
+  });
+
+  it("reports no stale-WAL reason when the WAL is empty", async () => {
+    const source = join(dir, "zotero.sqlite");
+    await writeFile(`${source}-wal`, "");
+
+    await expect(staleWalReason(source)).resolves.toBeUndefined();
+  });
+
+  it("reports no stale-WAL reason when there is no WAL at all", async () => {
+    await expect(
+      staleWalReason(join(dir, "zotero.sqlite")),
+    ).resolves.toBeUndefined();
+  });
+
+  it("warns when a deliberately configured immutable read skips a WAL", async () => {
     const source = join(dir, "zotero.sqlite");
     await writeFile(source, "main");
     await writeFile(`${source}-wal`, "wal");
+
+    await using prepared = await prepareRead("immutable", source);
+
+    expect(prepared.effectiveMode).toBe("immutable");
+    expect(prepared.fallbackReason).toBe("wal-not-replayed");
+  });
+
+  it("copies the main database and WAL into an owned temp dir", async () => {
+    const source = join(dir, "zotero.sqlite");
+    const main = Buffer.alloc(100, 1);
+    const wal = Buffer.alloc(32, 2);
+    await writeFile(source, main);
+    await writeFile(`${source}-wal`, wal);
 
     const preparedPath = await (async () => {
       await using prepared = await prepareRead("copy", source);
@@ -61,10 +95,10 @@ describe("read-source", () => {
       expect(prepared.effectiveMode).toBe("copy");
       expect(prepared.uriOptions).toEqual({ mode: "ro" });
       expect(prepared.path).not.toBe(source);
-      await expect(readFile(prepared.path, "utf8")).resolves.toBe("main");
-      await expect(readFile(`${prepared.path}-wal`, "utf8")).resolves.toBe(
-        "wal",
-      );
+      // Source and temp folder share a volume here, so placement stays put.
+      expect(dirname(dirname(prepared.path))).toBe(tmpdir());
+      await expect(readFile(prepared.path)).resolves.toEqual(main);
+      await expect(readFile(`${prepared.path}-wal`)).resolves.toEqual(wal);
       return prepared.path;
     })();
 
@@ -75,10 +109,10 @@ describe("read-source", () => {
 describe("DatabaseService", () => {
   let prepareMock: ReturnType<typeof vi.fn>;
   let snapshotMock: ReturnType<typeof vi.fn>;
-  let reapStaleReadTempsMock: ReturnType<typeof vi.fn>;
   let createClientMock: ReturnType<typeof vi.fn>;
   let watchMock: ReturnType<typeof vi.fn>;
   let existsSyncMock: ReturnType<typeof vi.fn>;
+  let reapMock: ReturnType<typeof vi.fn>;
   let settings: FakeSettings;
   let zoteroPref: FakeZoteroPref;
   let DatabaseService: typeof import("./service").DatabaseService;
@@ -90,10 +124,10 @@ describe("DatabaseService", () => {
 
     prepareMock = vi.fn();
     snapshotMock = vi.fn(async () => fingerprint("/zotero/zotero.sqlite"));
-    reapStaleReadTempsMock = vi.fn(async () => undefined);
     createClientMock = vi.fn();
     watchMock = vi.fn(() => ({ close: vi.fn() }));
     existsSyncMock = vi.fn(() => false);
+    reapMock = vi.fn(async () => {});
 
     vi.doMock("./read-source", async (importOriginal) => {
       const actual = await importOriginal<typeof import("./read-source")>();
@@ -101,12 +135,12 @@ describe("DatabaseService", () => {
         ...actual,
         prepareRead: prepareMock,
         snapshotSource: snapshotMock,
-        reapStaleReadTemps: reapStaleReadTempsMock,
       };
     });
     vi.doMock("@zotlit/db/client/node", () => ({
       createClient: createClientMock,
     }));
+    vi.doMock("./reap-temps", () => ({ reapReadClones: reapMock }));
     vi.doMock("node:fs", async (importOriginal) => {
       const actual = await importOriginal<typeof import("node:fs")>();
       return {
@@ -126,6 +160,7 @@ describe("DatabaseService", () => {
     vi.doUnmock("./read-source");
     vi.doUnmock("@zotlit/db/client/node");
     vi.doUnmock("node:fs");
+    vi.doUnmock("./reap-temps");
   });
 
   /** Drives the parent-directory watcher the service bound most recently. */
@@ -153,22 +188,14 @@ describe("DatabaseService", () => {
 
       expect(prepareMock).toHaveBeenCalledWith("auto", "/zotero/zotero.sqlite");
       expect(createClientMock).toHaveBeenCalledWith(
-        "file:///clone/zotero.sqlite?mode=ro",
+        buildSqliteUri(read.path, read.uriOptions),
         { jit: true },
       );
-      expect(reapStaleReadTempsMock).toHaveBeenCalledWith(
-        expect.any(AbortSignal),
-      );
-      const reapSignal = reapStaleReadTempsMock.mock
-        .calls[0]![0] as AbortSignal;
-      expect(reapSignal.aborted).toBe(false);
       expect(service.state).toBe("ready");
       expect(service.activeReadMode).toBe("copy");
       expect(service.client).toBe(client);
     }
 
-    const reapSignal = reapStaleReadTempsMock.mock.calls[0]![0] as AbortSignal;
-    expect(reapSignal.aborted).toBe(true);
     expect(client.$client.close).toHaveBeenCalledOnce();
     expect(read[Symbol.asyncDispose]).toHaveBeenCalledOnce();
   });
@@ -224,6 +251,35 @@ describe("DatabaseService", () => {
       ["immutable", "/zotero/zotero.sqlite"],
       ["immutable", "/next/zotero.sqlite"],
     ]);
+  });
+
+  it("sweeps read snapshots beside each database path it binds, once each", async () => {
+    prepareMock
+      .mockResolvedValueOnce(prepared("/clone/one.sqlite", "copy"))
+      .mockResolvedValueOnce(prepared("/clone/two.sqlite", "copy"))
+      .mockResolvedValueOnce(prepared("/clone/three.sqlite", "copy"));
+    createClientMock
+      .mockReturnValueOnce(fakeClient())
+      .mockReturnValueOnce(fakeClient())
+      .mockReturnValueOnce(fakeClient());
+
+    await using service = new DatabaseService(deps(settings, zoteroPref));
+    await service.ready;
+
+    expect(reapMock).toHaveBeenCalledExactlyOnceWith({
+      parent: join("/zotero", ZOTERO_DB_READ_PARENT_DIRNAME),
+    });
+
+    await service.refresh();
+    expect(reapMock).toHaveBeenCalledOnce();
+
+    zoteroPref.setDatabasePath("/next/zotero.sqlite");
+    await waitForCallCount(prepareMock, 3);
+    await waitForCallCount(reapMock, 2);
+
+    expect(reapMock).toHaveBeenLastCalledWith({
+      parent: join("/next", ZOTERO_DB_READ_PARENT_DIRNAME),
+    });
   });
 
   it("keeps refreshing active across coalesced trailing reruns", async () => {
@@ -449,6 +505,42 @@ describe("DatabaseService", () => {
 
       emitDirEvent("zotero.sqlite");
       emitDirEvent("zotero.sqlite-wal");
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(prepareMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("refreshes an immutable read when the source fingerprint is unchanged", async () => {
+      prepareMock
+        .mockResolvedValueOnce(prepared("/zotero/zotero.sqlite", "immutable"))
+        .mockResolvedValueOnce(prepared("/zotero/zotero.sqlite", "immutable"));
+      createClientMock
+        .mockReturnValueOnce(fakeClient())
+        .mockReturnValueOnce(fakeClient());
+
+      await using service = new DatabaseService(deps(settings, zoteroPref));
+      await service.ready;
+
+      emitDirEvent("zotero.sqlite");
+      await vi.advanceTimersByTimeAsync(2000);
+      await waitForCallCount(prepareMock, 2);
+
+      expect(prepareMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps an immutable watcher tick cancelled when auto-refresh is off", async () => {
+      prepareMock
+        .mockResolvedValueOnce(prepared("/zotero/zotero.sqlite", "immutable"))
+        .mockResolvedValueOnce(prepared("/zotero/zotero.sqlite", "immutable"));
+      createClientMock
+        .mockReturnValueOnce(fakeClient())
+        .mockReturnValueOnce(fakeClient());
+
+      await using service = new DatabaseService(deps(settings, zoteroPref));
+      await service.ready;
+
+      emitDirEvent("zotero.sqlite");
+      settings.set({ "zotero.auto-refresh": false });
       await vi.advanceTimersByTimeAsync(2000);
 
       expect(prepareMock).toHaveBeenCalledTimes(1);
@@ -824,13 +916,13 @@ function deps(settings: FakeSettings, zoteroPref: FakeZoteroPref): Deps {
 function prepared(
   path: string,
   effectiveMode: EffectiveReadMode,
-  fallbackNotice?: PreparedRead["fallbackNotice"],
+  fallbackReason?: PreparedRead["fallbackReason"],
 ): PreparedRead {
   return {
     path,
     uriOptions: { mode: "ro" },
     effectiveMode,
-    fallbackNotice,
+    fallbackReason,
     [Symbol.asyncDispose]: vi.fn(async () => undefined),
   };
 }
@@ -846,10 +938,9 @@ function fingerprint(
       dev: 1n,
       ino: 2n,
       size: main.size ?? 1n,
-      mtimeNs: 3n,
-      ctimeNs: 4n,
+      header: Buffer.alloc(100),
     },
-    wal: { exists: false },
+    wal: { state: "absent" },
   };
 }
 

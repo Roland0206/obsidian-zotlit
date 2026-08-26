@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ambiguousCandidates } from "@/services/citation-index/__fixtures__/ambiguous-candidates";
 import type {
   CitationOccurrence,
   ReferenceSource,
@@ -78,10 +79,14 @@ async function render(
   listMode: ReferencesListMode,
   {
     formattingFailed = false,
+    documentPresentationError = null,
     engine = { kind: "installed", version: "test" },
     copy = { kind: "blocked", reason: "pending" },
   }: Partial<
-    Pick<ReferencesState, "formattingFailed" | "engine" | "copy">
+    Pick<
+      ReferencesState,
+      "formattingFailed" | "documentPresentationError" | "engine" | "copy"
+    >
   > = {},
 ): Promise<HTMLElement> {
   state = {
@@ -89,6 +94,7 @@ async function render(
     listMode,
     engine,
     formattingFailed,
+    documentPresentationError,
     dbReady: true,
     copy,
   };
@@ -379,6 +385,44 @@ describe("References", () => {
     ).toBe(false);
   });
 
+  it("shows an ambiguous citekey's candidates and disables its note action", async () => {
+    const container = await render(
+      [
+        {
+          id: "@doe2024",
+          refNumber: 1,
+          occurrences: [occurrence],
+          kind: "ambiguous",
+          citekey: "doe2024",
+          candidates: ambiguousCandidates,
+        },
+      ],
+      { kind: "minimal" },
+    );
+
+    const row = container.querySelector("li")!;
+    expect(row.children[0]!.textContent).toBe("⚠");
+    expect(row.textContent).toContain(
+      "@doe2024 matches multiple items in your Zotero library.",
+    );
+    // Item summary, Library name, and bare Zotero key: the three facts that
+    // tell two candidates of one Library apart.
+    const rows = [...row.querySelectorAll("li")];
+    expect(rows.map((el) => el.textContent)).toStrictEqual([
+      "Doe (2024): A study of citationsMy LibraryDOE2024A",
+      "Doe (2024): Another studyShared groupDOE2024B",
+    ]);
+    expect(
+      row.querySelector('[data-icon="file-text"]')?.hasAttribute("disabled"),
+    ).toBe(true);
+    // The citations are still in the document, so jumping to them stands.
+    expect(
+      row
+        .querySelector('[data-icon="chevron-right"]')
+        ?.hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
   it("shows a visible error above the current minimal list after formatting fails", async () => {
     const container = await render(
       [
@@ -444,6 +488,20 @@ describe("References banners", () => {
       "a formatting failure",
       { formattingFailed: true } satisfies Partial<ReferencesState>,
       "ZotLit could not format these references",
+    ],
+    [
+      "an unusable note style",
+      {
+        documentPresentationError: "style",
+      } satisfies Partial<ReferencesState>,
+      "This note's citation and references style is unavailable",
+    ],
+    [
+      "an unusable document language",
+      {
+        documentPresentationError: "language",
+      } satisfies Partial<ReferencesState>,
+      "This note's document language is invalid",
     ],
   ])("keeps %s with the scrolling list region", async (_, state, title) => {
     const container = await render([summaryEntry], { kind: "minimal" }, state);

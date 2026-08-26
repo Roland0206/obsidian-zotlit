@@ -27,7 +27,7 @@ _For the longer personal backstory behind the decision to rebuild, see [Reconnec
 
 On top of the driver swap, v2 uses Drizzle ORM as a structured data layer. In v1, every database query was hand-written SQL, and item fields were essentially untyped. If Zotero changed a field name or added a column, v1 had no way to notice until something rendered wrong in a template. In v2, field types are generated from Zotero's own schema definitions, so each item type (journal article, book, conference paper) gets typed fields. Mismatches show up in the Template Data Explorer rather than in a silently wrong note. This also makes it easier to keep up with Zotero's own changes. v2 tracks Zotero's schema version with an update procedure. By comparison, v1's types were generated once and never refreshed.
 
-v2's Zotero companion add-on targets Zotero 9, whose API has settled enough to build against without chasing a moving target.
+ZotLit Companion, the Zotero add-on, targets Zotero 9, whose API has settled enough to build against without chasing a moving target.
 
 I wrote v1 while teaching myself to program alongside medical school. Working in tech full-time since has changed how I build software, and the rewrite was a chance to apply that: fewer moving parts, less code to break. The plugin does the same things with a simpler internal structure, which means fixes and new features take less time to ship. Coding agents help too. They work better with straightforward code, which is another reason to keep the internals simple.
 
@@ -43,10 +43,7 @@ If you read and annotate PDFs in Zotero, the annotation view gives you a workspa
 
 ![Literature note in Obsidian with the annotation view open, showing search, color and tag filters, and annotation cards for a Zotero item](/img/blog/annotation-view.webp)
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/how-to/use-annotation-view"
-  kind="external"
->
+<ActionLink href="/docs/how-to/use-annotation-view" kind="external">
   Using the annotation view
 </ActionLink>
 
@@ -56,10 +53,7 @@ Creating Literature Notes one at a time works fine for a handful of items, but f
 
 ![Update literature notes dialog in Obsidian listing Zotero items to update and create in bulk](/img/blog/beta-batch-workflow.webp)
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/how-to/create-and-open-notes#bulk"
-  kind="external"
->
+<ActionLink href="/docs/how-to/create-and-open-notes#bulk" kind="external">
   Creating and opening notes: bulk operations
 </ActionLink>
 
@@ -69,10 +63,7 @@ Some researchers do most of their writing in Zotero's built-in note editor. v2 c
 
 ![A Zotero note imported into Obsidian as a Markdown file, with its content and structure preserved](/img/blog/beta-imported-note.webp)
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/how-to/import-zotero-notes"
-  kind="external"
->
+<ActionLink href="/docs/how-to/import-zotero-notes" kind="external">
   Importing Zotero notes
 </ActionLink>
 
@@ -82,16 +73,10 @@ The template system lets you customize how Literature Notes, annotations, and ci
 
 ![Template Data Explorer panel in Obsidian showing the typed properties available for a Zotero item](/img/blog/beta-template-data-explorer.webp)
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/concepts/how-templates-work"
-  kind="external"
->
+<ActionLink href="/docs/concepts/how-templates-work" kind="external">
   How templates work
 </ActionLink>
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/how-to/explore-template-data"
-  kind="external"
->
+<ActionLink href="/docs/how-to/explore-template-data" kind="external">
   Exploring template data
 </ActionLink>
 
@@ -101,10 +86,7 @@ ZotLit v2 introduces breaking changes, so you'll need to migrate your existing i
 
 First, you can install the beta via BRAT.
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/install-zotlit"
-  kind="external"
->
+<ActionLink href="/docs/install-zotlit" kind="external">
   Install ZotLit v2
 </ActionLink>
 
@@ -133,19 +115,13 @@ Then, in short, you'll need to:
 
 Follow the migration guide for detailed instructions on each step.
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/how-to/migrate-from-v1"
-  kind="external"
->
+<ActionLink href="/docs/how-to/migrate-from-v1" kind="external">
   Migrate from v1
 </ActionLink>
 
 If you're new to ZotLit, follow the tutorial.
 
-<ActionLink
-  href="https://zotlit.aidenlx.site/docs/tutorial/first-note"
-  kind="external"
->
+<ActionLink href="/docs/tutorial/first-note" kind="external">
   Create your first literature note
 </ActionLink>
 
@@ -153,7 +129,7 @@ If you're new to ZotLit, follow the tutorial.
 
 Questions, ideas, and bug reports all go through the community page. Discord is the fastest path for a quick question. If you think you've found a bug, open a report in GitHub Discussions instead. It gives us better tracking and context than a chat thread, and we'll confirm it's reproducible before making it an issue.
 
-<ActionLink href="https://zotlit.aidenlx.site/community" kind="external">
+<ActionLink href="/community" kind="external">
   Community
 </ActionLink>
 

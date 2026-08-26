@@ -2,6 +2,7 @@ import { getLanguage, Plugin, requestUrl } from "obsidian";
 import semverGte from "semver/functions/gte";
 
 import { DOCS_SITE_URL } from "@/lib/constants";
+import { DisposableAbortController } from "@/lib/disposables";
 import * as m from "@/lib/i18n/generated/messages";
 
 import { initI18n } from "./lib/i18n";
@@ -17,19 +18,25 @@ import { registerAttachmentSkipNotice } from "./services/attachment-import/notic
 import { buildServices } from "./services/build";
 import { registerCitationsCli } from "./services/citation-index/cli/register";
 import { addCitekeyEditorActions } from "./services/citekey-editor/actions";
+import { registerCitekeyCandidatePicker } from "./services/citekey-editor/candidates";
 import { registerCitekeyEditorNotices } from "./services/citekey-editor/notices";
 import { addDatabaseActions } from "./services/database/actions";
+import { reapReadClones } from "./services/database/reap-temps";
 import { addIndexedKeyActions } from "./services/indexed-key/actions";
 import { registerIndexedKeyFileMenu } from "./services/indexed-key/menu";
+import { registerLibraryScopeCli } from "./services/library-scope/cli";
+import { registerLibraryScopeNotices } from "./services/library-scope/notices";
 import { addNoteFeatureActions } from "./services/note-feature/actions";
 import { runBatchUpdateAll } from "./services/note-feature/update-batch";
 import { registerCitationStyleNotice } from "./services/pandoc/notices";
+import { reapCslStore } from "./services/pandoc/reap-temps";
 import { registerPandocResolve } from "./services/pandoc/register";
 import { registerProtocolHandlers } from "./services/protocol/register";
 import { addReleaseActions } from "./services/release/actions";
 import { registerTemplateWorkbench } from "./services/template-workbench/register";
 import { ZotLitSettingTab } from "./setting-tab";
 import { registerAnnotView } from "./views/annot-view/register";
+import { registerCitationPresentation } from "./views/citation-presentation/register";
 import { registerCitationSuggest } from "./views/citation-suggest/register";
 import { registerCitedByView } from "./views/cited-by/register";
 import { registerPandocExport } from "./views/pandoc-export/register";
@@ -178,6 +185,15 @@ export default class ZotLitPlugin extends Plugin {
     // Local stack gives automatic rollback if any synchronous startup wiring
     // fails before the plugin commits ownership with `stack.move()`.
     await using stack = new AsyncDisposableStack();
+
+    // Clear the temp residue of crashed runs before any service adds more.
+    // Fire-and-forget: a launch never waits on housekeeping, and unloading
+    // mid-sweep aborts it. Each producer owns what its own residue is, and
+    // each reap reports its own failures rather than raising them.
+    const reapAbort = stack.use(new DisposableAbortController());
+    void reapReadClones({ signal: reapAbort.signal });
+    void reapCslStore({ signal: reapAbort.signal });
+
     const { services } = buildServices(this, stack);
 
     this.addSettingTab(
@@ -185,6 +201,7 @@ export default class ZotLitPlugin extends Plugin {
         plugin: this,
         settings: services.settings,
         db: services.db,
+        libraryScope: services.libraryScope,
         zoteroPref: services.zoteroPref,
         attachmentImport: services.attachmentImport,
         citationIndex: services.citationIndex,
@@ -209,6 +226,7 @@ export default class ZotLitPlugin extends Plugin {
           app: this.app,
           db: services.db,
           settings: services.settings,
+          libraryScope: services.libraryScope,
           noteFeature: services.noteFeature,
           noteIndex: services.noteIndex,
         }),
@@ -218,6 +236,7 @@ export default class ZotLitPlugin extends Plugin {
       lookup: services.itemLookup,
       noteFeature: services.noteFeature,
       settings: services.settings,
+      citationIndex: services.citationIndex,
     });
     registerQuickSwitch(this, {
       app: this.app,
@@ -232,6 +251,7 @@ export default class ZotLitPlugin extends Plugin {
         app: this.app,
         settings: services.settings,
         db: services.db,
+        libraryScope: services.libraryScope,
         zoteroPref: services.zoteroPref,
         noteFeature: services.noteFeature,
         noteIndex: services.noteIndex,
@@ -275,6 +295,7 @@ export default class ZotLitPlugin extends Plugin {
       app: this.app,
       db: services.db,
       citationIndex: services.citationIndex,
+      libraryScope: services.libraryScope,
       citationText: services.citationText,
       citekeyEditor: services.citekeyEditor,
       pandocEngine: services.pandocEngine,
@@ -293,6 +314,14 @@ export default class ZotLitPlugin extends Plugin {
       db: services.db,
       zoteroPref: services.zoteroPref,
     });
+
+    // e2e-only: lets packages/e2e read the resolved Library Scope after a
+    // Scope Case switch, through the plugin's own CLI Contract surface
+    // rather than an internal eval. A dev-build diagnostic port, not a
+    // feature for end users — never registered in a production build.
+    if (__DEV__) {
+      registerLibraryScopeCli(this, { libraryScope: services.libraryScope });
+    }
 
     registerTemplateWorkbench(this, {
       app: this.app,
@@ -321,6 +350,12 @@ export default class ZotLitPlugin extends Plugin {
       },
     });
 
+    registerCitationPresentation(this, {
+      app: this.app,
+      zoteroPref: services.zoteroPref,
+      settings: services.settings,
+    });
+
     registerWelcomeView(this, {
       app: this.app,
       db: services.db,
@@ -340,11 +375,24 @@ export default class ZotLitPlugin extends Plugin {
       }),
     );
     stack.defer(registerCitekeyEditorNotices(services.citekeyEditor));
-
-    // A Zotero item add/modify/trash push means the database changed; feed it
-    // into the same coalesced refresh lane as the filesystem watchers.
     stack.defer(
-      services.liveUpdate.on("item/update", () => {
+      registerCitekeyCandidatePicker(this.app, services.citekeyEditor),
+    );
+    stack.defer(
+      registerLibraryScopeNotices(services.libraryScope, () => {
+        revealSetting(
+          this.app,
+          this.manifest.id,
+          m.settings_library_scope_name(),
+        );
+      }),
+    );
+
+    // The companion's Freshness Signal means the database changed and its
+    // Checkpoint attempt has settled; feed it into the same coalesced refresh
+    // lane as the filesystem watchers.
+    stack.defer(
+      services.liveUpdate.on("db/updated", () => {
         services.db.notifyExternalChange();
       }),
     );

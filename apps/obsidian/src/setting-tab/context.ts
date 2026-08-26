@@ -4,6 +4,7 @@ import type { LanguagePackLifecycle } from "@/lib/i18n";
 import type { AttachmentImportService } from "@/services/attachment-import/service";
 import type { CitationIndex } from "@/services/citation-index/service";
 import type { DatabaseService } from "@/services/database/service";
+import type { LibraryScopeService } from "@/services/library-scope/service";
 import type { PandocEngineService } from "@/services/pandoc/service";
 import type { ReleaseService } from "@/services/release/service";
 import type { Settings } from "@/services/settings/schema";
@@ -46,10 +47,12 @@ export interface SettingTabContext {
   plugin: ZotLitPlugin;
   settings: SettingsService;
   db: DatabaseService;
+  /** The live Library Scope the Library scope rows read and repair. */
+  libraryScope: LibraryScopeService;
   zoteroPref: ZoteroPrefService;
   /** The approved-folder store the Attachments page lists and mutates. */
   attachmentImport: AttachmentImportActions;
-  /** The vault-wide Citation Index, reset from the Diagnostics page. */
+  /** The vault-wide Citation Index, reset from the Maintenance page. */
   citationIndex: CitationIndexActions;
   release: ReleaseTabActions;
   /** The device-wide Pandoc engine binary, installed and uninstalled from here. */

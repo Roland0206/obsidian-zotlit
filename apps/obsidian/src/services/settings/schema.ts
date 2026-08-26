@@ -1,7 +1,6 @@
 import { getLogLevels } from "@logtape/logtape";
 import * as v from "valibot";
 
-import { USER_LIBRARY_ID } from "@zotlit/db";
 import {
   autoTrimSchema,
   DEFAULT_AUTO_TRIM,
@@ -9,6 +8,10 @@ import {
 } from "@zotlit/templates/constants";
 import type { AutoTrim } from "@zotlit/templates/constants";
 
+import {
+  DEFAULT_LIBRARY_SCOPE,
+  libraryScopeSchema,
+} from "@/services/library-scope/scope";
 import { DEFAULT_FRONTMATTER_FIELDS } from "@/services/template/defaults";
 
 /**
@@ -86,6 +89,11 @@ export const schema = v.object({
   "citation.open-as-links": v.boolean(),
   /** CSL style ID; `null` renders with the citation engine's embedded style. */
   "citation.references-style": v.nullable(v.string()),
+  /**
+   * Citation Locale as a BCP 47 tag; `null` or empty leaves the selected CSL
+   * style's own default locale in charge.
+   */
+  "citation.locale": v.nullable(v.string()),
   /** What hovering a Citation shows, on every surface that carries one. */
   "citation.hover-action": hoverAction,
   /** Whether the Citation Popover needs a held Mod, per editing mode. */
@@ -96,6 +104,7 @@ export const schema = v.object({
   "note.literature-folder": v.string(),
   "note.frontmatter-fields": frontmatterFieldsSchema,
   "note.import-folder": v.string(),
+  "note.import-colored-highlights": v.boolean(),
   "note.import-annotations-as-template": v.boolean(),
 
   "lit-management.placement-enabled": v.boolean(),
@@ -113,7 +122,12 @@ export const schema = v.object({
 
   "zotero.auto-refresh": v.boolean(),
   "zotero.read-mode": zoteroReadMode,
-  "zotero.citation-library": settingsNumber,
+  /**
+   * Libraries used for item search, citation key resolution, and library-wide
+   * commands. Strict by design — an out-of-order or empty selection is broken
+   * input, not something to normalize; see `services/library-scope/scope.ts`.
+   */
+  "zotero.library-scope": libraryScopeSchema,
 
   "attachment.folder-path": v.nullable(v.string()),
   "attachment.import": v.boolean(),
@@ -141,6 +155,7 @@ export const defaults: Readonly<Settings> = Object.freeze({
   "citation.show-formatted": true,
   "citation.open-as-links": false,
   "citation.references-style": null,
+  "citation.locale": null,
   "citation.hover-action": "popover",
   // Source mode keeps the modifier so plain-text editing is never interrupted,
   // while the two rendered modes answer to bare hover.
@@ -150,6 +165,7 @@ export const defaults: Readonly<Settings> = Object.freeze({
   "note.literature-folder": "literatures",
   "note.frontmatter-fields": DEFAULT_FRONTMATTER_FIELDS,
   "note.import-folder": "zotero_notes",
+  "note.import-colored-highlights": false,
   "note.import-annotations-as-template": false,
   "lit-management.placement-enabled": false,
   "lit-management.command": "lit-management",
@@ -163,7 +179,7 @@ export const defaults: Readonly<Settings> = Object.freeze({
   "template.auto-trim-trailing": DEFAULT_AUTO_TRIM.trailing,
   "zotero.auto-refresh": true,
   "zotero.read-mode": "auto",
-  "zotero.citation-library": USER_LIBRARY_ID,
+  "zotero.library-scope": DEFAULT_LIBRARY_SCOPE,
   "attachment.folder-path": null,
   "attachment.import": true,
   // Absent until the release check records a launch; see the release service.

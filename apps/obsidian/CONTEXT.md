@@ -67,11 +67,15 @@ The Template Data Explorer's default anchor — the full note-template context f
 **Annotation Root**:
 The Template Data Explorer re-anchored at a single Annotation, exactly what the `annotation` template receives as `zt`; copy paths root at the annotation. Entered from that annotation's node in the Note Root tree, or directly via an annotation-scoped entry point.
 
+**Template Data Export** _(Obsidian)_:
+The Template Data Explorer's current root, saved as a JSON file for a bug report. Always the whole root the pane is anchored at — the Note Root or the Annotation Root — never the rows an active filter leaves visible. Carries the same data the Agent CLI answers with, under a header naming the plugin version, the contract version, and the Indexed Key and root that reproduce it. Being Explorer data, it records inert placeholders where a real render would write files.
+_Avoid_: template export (suggests rendered note output), data dump (the file follows the published contract, it is not raw state)
+
 ### Agent CLI
 
 **CLI Contract**:
 The wire format of one `zotlit:*` command namespace — its envelope, payload fields, and diagnostic codes. Each namespace versions its own, so a bump in one says nothing about another. Distinct from the Template Contract, which is a promise about `zt` data rather than about an answer's shape.
-_Avoid_: contract version (names the number, not the thing); protocol (that is the Zotero companion's wire format)
+_Avoid_: contract version (names the number, not the thing); protocol (that is the wire format for ZotLit Companion, the Zotero add-on)
 
 ### Annotation view
 
@@ -92,6 +96,10 @@ _Avoid_: annotation (that's the live Zotero entity), mark
 **Annotation Paragraph**:
 A `<p>` in a Child Note's HTML whose sole content is a single Annotation Excerpt (optionally followed by a citation). Detected structurally by the note parser; when the `note.import-annotations-as-template` setting is on, the paragraph is subsumed and re-rendered through the `annotation` template from live DB data instead of the frozen excerpt.
 _Avoid_: annotation block, callout
+
+**Colored Highlight Syntax**:
+The opt-in Markdown representation for red, orange, yellow, green, blue, and purple highlights in an Imported Note. A colored-circle emoji at the start of `==...==` selects the color; highlights outside that set retain their HTML representation.
+_Avoid_: Bear highlight, emoji highlight
 
 ### Integration processes
 
@@ -134,7 +142,7 @@ An active-document identifier assigned to each distinct Literature Note Citation
 _Avoid_: citation key, reference index, Entry Serial (bibliography-ordered, not first-occurrence)
 
 **Reference Error** _(Obsidian)_:
-A References Sidebar entry for an unresolved citation key, a missing Item, a malformed Citation Fragment while Wikilink Citations is on, or a source-backed Item omitted from a completed bibliography rendering.
+A References Sidebar entry for an unresolved or ambiguous Citation Key, a missing Item, a malformed Citation Fragment while Wikilink Citations is on, or a source-backed Item omitted from a completed bibliography rendering.
 _Avoid_: broken reference, missing reference (names only one cause)
 
 **References Sidebar** _(Obsidian)_:
@@ -154,8 +162,24 @@ The raw source range shown around one Citation Occurrence in the Cited By Sideba
 _Avoid_: matched line, context preview, source preview
 
 **Citation and References Style**:
-The CSL style used for both Document Citation Text and rendered entries in the References Sidebar, stored in synced settings as a CSL style ID. Zotero owns the available styles; choosing Default uses the Pandoc Engine's embedded style. An unavailable selected style leaves in-text sources visible and the sidebar minimal, shows a settings warning, and raises one notice per plugin lifecycle with an action that opens the Citations settings.
+The Zotero-installed CSL style used for both Document Citation Text and rendered entries in the References Sidebar. A vault selection supplies the default, and a document's `zotlit-csl` property can select its own installed style by CSL ID. Zotero owns style installation; choosing Default uses the Pandoc Engine's embedded style. An unavailable selected style leaves in-text sources visible and the sidebar minimal, shows a settings warning, and raises one notice per plugin lifecycle with an action that opens the Citations settings.
 _Avoid_: citation style (conflicts with the `cite` Template's format), references style (omits in-text Citations), CSL file (names the file, not the selection)
+
+**Resolved CSL Style**:
+The standalone CSL file that ZotLit derives from a Zotero-installed Citation and References Style. For an independent style, it contains that style. For a dependent style, it combines the parent style's formatting with the dependent style's default locale. The app, built-in export, and native Pandoc integration use the same resolver; the `zotlit:csl` command materializes a content-addressed file and returns its absolute path.
+_Avoid_: parent CSL file (loses the dependent style's locale), exported style (suggests a user-owned copy)
+
+**Citation Locale**:
+The locale the CSL processor uses for localized terms, dates, names, and collation in one document. Document Language overrides the vault Citation Locale; Style Default delegates to the selected CSL style, then to the processor fallback. It is independent of Obsidian's interface language and an Item's language.
+_Avoid_: citation language, interface language, item language
+
+**Document Language** _(Pandoc)_:
+The main language declared by a note's standard Pandoc `lang` metadata, which also supplies its explicit Citation Locale. **Set citation presentation** labels this value **Document language**; choosing **Use vault citation locale and remove document language** removes `lang` and restores the vault Citation Locale for citation processing.
+_Avoid_: citation language (names only one effect), ZotLit language
+
+**Citation Presentation**:
+The document-specific combination of Citation and References Style and Citation Locale shared by Document Citation Text, the References Sidebar, the Citation Popover, the Copied Bibliography, and the initial built-in export choices. Vault selections supply defaults that `zotlit-csl` and `lang` can override; an invalid document override leaves citation source visible, shows the minimal References Sidebar with a note-scoped error, and keeps bibliography copy unavailable instead of silently falling back.
+_Avoid_: citation format (omits references and locale), render settings
 
 **Pandoc Engine**:
 The Pandoc WASM binary that formats references and runs the built-in export, pinned per plugin release to one upstream release asset and its SHA-256. A user starts the download from settings; ZotLit verifies the bytes against the pin before they become the cache, stores them uncompressed and content-addressed, and shares them with every vault on the device. Uninstall reaches the whole device. The engine's absence is a normal mode, and its download, checksum, and startup failures each name themselves so one fallback surface guides the user out.
@@ -236,16 +260,23 @@ _Avoid_: reading-mode wikilink widget (a widget is the Live Preview decoration)
 
 ### Index and identity
 
+**Library Scope**:
+The set of Libraries used for discovery and unqualified batch operations. It is either All Libraries or a non-empty set of Selected Libraries; unavailable selections remain part of the scope while available Libraries continue to serve discovery.
+
 **Note Index**:
-A vault-wide in-memory index mapping `zotero-key` to Literature Notes and `zotero-note-key` to Imported Notes. It also resolves a wikilink linkpath to the Indexed Key of the Literature Note it points at. Metadata-cache changes keep the mappings current, and the Literature Note key set answers the companion's `GET /literature-notes` note-status query after the first full scan settles.
+A vault-wide in-memory index mapping `zotero-key` to Literature Notes and `zotero-note-key` to Imported Notes. It also resolves a wikilink linkpath to the Indexed Key of the Literature Note it points at. Metadata-cache changes keep the mappings current, and the Literature Note key set answers the Companion's `GET /literature-notes` note-status query after the first full scan settles.
 
 **Citation Index**:
 The plugin-owned, internal vault-wide index of Citation Occurrences across both citation syntaxes — literal Pandoc citations and Literature Note wikilinks. It tracks derived source facts independently of which citation sources the user includes; the Document Citation Set applies those choices for citation-aware consumers. Reset Citation Index remains a Diagnostics recovery action that rebuilds this derived data without changing vault files.
 _Avoid_: citation cache (names the persistence, not the index), citation scanner (the per-file parse step, not the index)
 
 **Citekey Resolution Snapshot**:
-The Citation Index's in-memory map from a native Zotero citation key to its Item, and back, scoped to the configured citation library and rebuilt wholesale whenever the Zotero database changes.
+The Citation Index's point-in-time answer for mapping Citation Keys to Items. Citation Key discovery covers the available Libraries in Library Scope; reverse lookup by exact Indexed Key covers every local Library.
 _Avoid_: citekey cache (implies incremental invalidation, not a wholesale rebuild)
+
+**Ambiguous Citation Key**:
+A Citation Key that names more than one Item in Library Scope, whether the candidates are in one Library or several Libraries. Distinct from `duplicate-citation-key`, a document-scoped collision among cited works.
+_Avoid_: duplicate citation key, citation key conflict
 
 **Citation Occurrence**:
 One appearance of a Citation in one file — its syntax kind (literal citekey or wikilink), its raw citekey or linkpath, and its full start–end position. Raw and unresolved by design: what it cites is answered at query time.
@@ -290,8 +321,14 @@ _Avoid_: allowed folder, trusted directory (implies a broader grant than one Att
 **Read Mode**:
 The strategy ZotLit uses to open `zotero.sqlite` while Zotero is running and holds the file exclusively. Configured per vault (synced) as one of four values: Auto, Reflink clone, Full copy, Immutable source. Auto resolves to one of the three concrete modes at runtime.
 
+**Main Identity**:
+The identity of one observed state of the main Zotero database file. It combines the file identity and size with the complete SQLite page-1 header, including the change counter that advances on rollback-journal commits.
+
+**WAL Generation**:
+The identity of one observed write-ahead log generation. It distinguishes an absent, empty, unstable, or present WAL; a present generation is identified by its WAL header and size. Two source fingerprints match when their path, Main Identity, and WAL Generation match; an unstable generation never matches.
+
 **Reflink Clone** _(Read Mode)_:
-Creates a lightweight snapshot of the database files into a temporary directory and opens the snapshot read-only. Sees committed and recent uncommitted edits. Default on macOS (via `clonefile`); unavailable on filesystems that do not support reflinking.
+Creates a lightweight snapshot of the database files into a temporary directory and opens the snapshot read-only. Sees committed changes that Zotero has not yet written to the main database file. Default on macOS (via `clonefile`); unavailable on filesystems that do not support reflinking.
 _Avoid_: copy-on-write clone (user-facing docs avoid this term)
 
 **Full Copy** _(Read Mode)_:
@@ -345,4 +382,4 @@ release locations, consent copy, notices, and settings UI.
 ### Protocol
 
 **Protocol Action**:
-A URL-scheme verb (`obsidian://zotlit/<action>`) sent by the Zotero companion to trigger an operation in Obsidian. Single-item actions: `open` (open or create), `update` (update or create). Batch actions: `update-many`, `import-notes`. Note-import action: `import-note`. Explorer action: `explore` (open the Template Data Explorer at an Item or an Annotation). Long URLs fall back to HTTP PUT on the plugin's local server, which also serves the companion's `GET /literature-notes` note-status query from the Note Index.
+A URL-scheme verb (`obsidian://zotlit/<action>`) sent by the Companion to trigger an operation in Obsidian. Single-item actions: `open` (open or create), `update` (update or create). Batch actions: `update-many`, `import-notes`. Note-import action: `import-note`. Explorer action: `explore` (open the Template Data Explorer at an Item or an Annotation). Long URLs fall back to HTTP PUT on the plugin's local server, which also serves the Companion's `GET /literature-notes` note-status query from the Note Index.

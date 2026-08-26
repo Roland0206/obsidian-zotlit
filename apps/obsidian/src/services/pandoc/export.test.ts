@@ -175,14 +175,19 @@ describe("exportCitedDocument", () => {
     ).toEqual({ citations: {} });
   });
 
-  it("carries the chosen style through to the engine", async () => {
-    const running = run(CITED, { styleXml: "<style/>", format: "html" });
+  it("carries the chosen style and Citation Locale through to the engine", async () => {
+    const running = run(CITED, {
+      styleXml: "<style/>",
+      locale: "de-DE",
+      format: "html",
+    });
     await running;
 
     const [request] = running.ports.renderDocument.mock.calls[0] as [
       DocumentRequest,
     ];
     expect(request.styleXml).toBe("<style/>");
+    expect(request.locale).toBe("de-DE");
     expect(request.format).toBe("html");
   });
 
@@ -257,10 +262,10 @@ describe("exportCitedDocument", () => {
       failure(
         await run({
           ...CITED,
-          bibliographyFailure: { code: "zotero-not-running", port: 23119 },
+          bibliographyFailure: { code: "zotero-unreachable", port: 23119 },
         }),
       ),
-    ).toEqual({ kind: "zotero-not-running", port: 23119 });
+    ).toEqual({ kind: "zotero-unreachable", port: 23119 });
 
     expect(
       failure(
@@ -276,6 +281,20 @@ describe("exportCitedDocument", () => {
       kind: "local-api-disabled",
       pref: "httpServer.localAPI.enabled",
     });
+  });
+
+  it("reports an automatic Zotero HTTP port as undiscoverable", async () => {
+    expect(
+      failure(
+        await run({
+          ...CITED,
+          bibliographyFailure: {
+            code: "zotero-port-automatic",
+            pref: "httpServer.port",
+          },
+        }),
+      ),
+    ).toEqual({ kind: "zotero-port-automatic", pref: "httpServer.port" });
   });
 
   it("reports a source that answered and refused", async () => {
@@ -349,7 +368,7 @@ describe(
   () => {
     it("cites the demo note through the bundled sandbox filter", async () => {
       await using engine = await createCitationEngine(
-        await readFile(WASM_PATH),
+        new Blob([await readFile(WASM_PATH)]),
       );
       const result = await exportCitedDocument(
         {
@@ -376,7 +395,7 @@ describe(
 
     it("cites the same note in the docx it writes", async () => {
       await using engine = await createCitationEngine(
-        await readFile(WASM_PATH),
+        new Blob([await readFile(WASM_PATH)]),
       );
       const result = await exportCitedDocument(
         {

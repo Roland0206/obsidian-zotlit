@@ -8,6 +8,8 @@ import { writeClipboardRichText } from "@/lib/clipboard";
 import * as m from "@/lib/i18n/generated/messages";
 import { getLogger } from "@/lib/log";
 import { BaseNotice } from "@/lib/notice";
+import { describeCandidates } from "@/services/citation-index/ambiguity";
+import type { AmbiguousCandidatesOf } from "@/services/citation-index/ambiguity";
 import {
   citationsEqual,
   documentCitationErrorsEqual,
@@ -23,6 +25,16 @@ import type {
 import type { CitationText } from "@/services/citation-text/service";
 import type { CitekeyEditor } from "@/services/citekey-editor/service";
 import type { DatabaseService } from "@/services/database/service";
+import type { LibraryScopeService } from "@/services/library-scope/service";
+import {
+  documentCitationPresentation,
+  documentPresentation,
+  samePresentation,
+} from "@/services/pandoc/document-presentation";
+import type {
+  DocumentPresentation,
+  UnusableProperty,
+} from "@/services/pandoc/document-presentation";
 import type { BibliographyRenderCache } from "@/services/pandoc/render-cache";
 import type { PandocEngineService } from "@/services/pandoc/service";
 
@@ -53,7 +65,12 @@ const logger = getLogger(["views", "references"]);
 export interface ReferencesViewDeps {
   app: App;
   db: Pick<DatabaseService, "state" | "client" | "ready" | "on">;
-  citationIndex: Pick<CitationIndex, "getDocumentCitationSet" | "on">;
+  citationIndex: Pick<
+    CitationIndex,
+    "getDocumentCitationSet" | "resolveCitekey" | "on"
+  >;
+  /** Names the Library each candidate of an Ambiguous Citation Key lives in. */
+  libraryScope: Pick<LibraryScopeService, "current">;
   /** Opens the Literature Note a citekey names, creating it first when it has none. */
   citekeyEditor: Pick<CitekeyEditor, "openCitekey">;
   /**
@@ -66,7 +83,10 @@ export interface ReferencesViewDeps {
     "getStatus" | "subscribe" | "decline"
   >;
   /** The plugin-wide render cache, which owns the Citation and References Style and the engine. */
-  bibliographyRender: Pick<BibliographyRenderCache, "render" | "on">;
+  bibliographyRender: Pick<
+    BibliographyRenderCache,
+    "render" | "on" | "vaultPresentation"
+  >;
   /** Reveals the engine row in settings, where the install lives. */
   openSettings: () => void;
   /** Reveals the Citation and References Style row in settings. */
@@ -105,6 +125,13 @@ export class ReferencesView extends ItemView {
   #citations: readonly Citation[] = [];
   /** Explicit citation-source errors of that note. */
   #errors: readonly DocumentCitationError[] = [];
+  /** Citation Presentation of that note, as the current list was rendered under. */
+  #presentation: DocumentPresentation = { kind: "read", presentation: {} };
+  /**
+   * The note property that put the current minimal list on screen; `null` while
+   * the note's own presentation is not what stopped the render.
+   */
+  #documentPresentationError: UnusableProperty | null = null;
   /** Where the current list's render stands, as copy readiness reads it. */
   #formatting: ReferencesFormatting = "pending";
   /** Copy readiness as it was last published, so only a change is logged. */
@@ -226,12 +253,30 @@ export class ReferencesView extends ItemView {
    */
   #rescan(): void {
     const scan = ++this.#scan;
+    // A presentation change makes the entries on screen stale the moment it is
+    // read, and the read that follows lands a turn later at the earliest, so
+    // the formatted entries go out of reach here rather than after it: no copy
+    // taken while the read runs carries the presentation left behind.
+    if (
+      !samePresentation(
+        this.#presentation,
+        this.#readPresentation(this.#activeMarkdownFile()),
+      )
+    ) {
+      this.#formatting = "pending";
+    }
     this.#refreshCopy();
     void this.#readCitationSet().then(({ file, citations, errors }) => {
       const path = file?.path ?? null;
+      // The note's own presentation properties decide what its list is rendered
+      // under, so a frontmatter edit that leaves the Citations untouched still
+      // moves this list — and the entries formatted before it are stale.
+      const presentation = this.#readPresentation(file);
+      const restyled = !samePresentation(this.#presentation, presentation);
       if (
         scan !== this.#scan ||
         (path === this.#path &&
+          !restyled &&
           citationsEqual(this.#citations, citations) &&
           documentCitationErrorsEqual(this.#errors, errors))
       ) {
@@ -241,11 +286,13 @@ export class ReferencesView extends ItemView {
       this.#path = path;
       this.#citations = citations;
       this.#errors = errors;
+      this.#presentation = presentation;
       logger.trace("References citations changed", {
         path,
         count: citations.length,
+        restyled,
       });
-      this.#reload();
+      this.#reload({ invalidate: restyled });
     });
   }
 
@@ -257,14 +304,34 @@ export class ReferencesView extends ItemView {
   async #readCitationSet(): Promise<
     DocumentCitationSet & { file: TFile | null }
   > {
-    const file = this.#deps.app.workspace.getActiveFile();
-    if (!file || file.extension !== "md") {
+    const file = this.#activeMarkdownFile();
+    if (!file) {
       return { file: null, occurrences: [], citations: [], errors: [] };
     }
     return {
       file,
       ...(await this.#deps.citationIndex.getDocumentCitationSet(file)),
     };
+  }
+
+  /**
+   * The Items an Ambiguous Citation Key names, or `null` for a citekey that
+   * names no Item at all. Read as the list is built, so a row states the
+   * candidates the current Library Scope names. Bound once, since every build
+   * of the list hands the same reader over.
+   */
+  readonly #ambiguousCandidates: AmbiguousCandidatesOf = (citekey) => {
+    const resolved = this.#deps.citationIndex.resolveCitekey(citekey);
+    return resolved.kind === "ambiguous"
+      ? describeCandidates(this.#deps, resolved.candidates)
+      : null;
+  };
+
+  /** The Citation Presentation one note renders under; no note renders as none. */
+  #readPresentation(file: TFile | null): DocumentPresentation {
+    return file === null
+      ? { kind: "read", presentation: {} }
+      : documentPresentation(this.#deps.app.metadataCache, file);
   }
 
   /**
@@ -277,6 +344,7 @@ export class ReferencesView extends ItemView {
       this.#rendered.clear();
       this.#entryMarkers = null;
       this.#formattingFailed = false;
+      this.#documentPresentationError = null;
     }
     this.#entrySerials = this.#readEntrySerials();
     const generation = ++this.#generation;
@@ -289,6 +357,7 @@ export class ReferencesView extends ItemView {
         complete: false,
       },
       errors: this.#errors,
+      ambiguous: this.#ambiguousCandidates,
     });
 
     // Retained formatted entries answer for the render that is about to be
@@ -299,6 +368,7 @@ export class ReferencesView extends ItemView {
       listMode: this.#listMode(),
       engine,
       formattingFailed: this.#formattingFailed,
+      documentPresentationError: this.#documentPresentationError,
       dbReady: this.#deps.db.state === "ready",
       copy: this.#trackCopy(entries),
     });
@@ -374,9 +444,13 @@ export class ReferencesView extends ItemView {
   }
 
   /** The active file when it is a note the citation index answers for. */
-  #activeMarkdownPath(): string | null {
+  #activeMarkdownFile(): TFile | null {
     const file = this.#deps.app.workspace.getActiveFile();
-    return file?.extension === "md" ? file.path : null;
+    return file?.extension === "md" ? file : null;
+  }
+
+  #activeMarkdownPath(): string | null {
+    return this.#activeMarkdownFile()?.path ?? null;
   }
 
   /**
@@ -389,20 +463,50 @@ export class ReferencesView extends ItemView {
    * completed render also shows the failure state. A completed render is
    * applied even when it is empty, so each source it omitted becomes a
    * Reference Error.
+   *
+   * A note whose own presentation is unusable never reaches the vault
+   * selections: it shows the minimal list with the error that names the note as
+   * the thing to repair, which also leaves the Copied Bibliography out of reach.
    */
   async #render(
     generation: number,
     citations: readonly Citation[],
     sources: ReadonlyMap<string, ReferenceSource>,
   ): Promise<void> {
-    const items = [...sources.values()].map((source) => source.csl);
-    const outcome = await this.#deps.bibliographyRender.render(items);
+    const declared = this.#presentation;
+    // One value for this render: the style and Citation Locale the note is
+    // shown under, and the works it cites in the order it cites them.
+    const presented = documentCitationPresentation(
+      declared,
+      this.#deps.bibliographyRender.vaultPresentation,
+      { citations, works: sources },
+    );
+    if (presented.kind === "unusable") {
+      this.#documentPresentationError = presented.property;
+      this.#showMinimal(citations, sources, false);
+      return;
+    }
+
+    const outcome = await this.#deps.bibliographyRender.render(
+      presented.items,
+      presented.presentation,
+    );
     if (generation !== this.#generation) return;
 
     if (outcome.kind !== "rendered") {
+      // A style the note itself named is the note's to repair; one it inherited
+      // from the vault is the vault selection's, which its own warning names.
+      this.#documentPresentationError =
+        outcome.kind === "unavailable" &&
+        outcome.reason === "style-missing" &&
+        declared.kind === "read" &&
+        declared.presentation.styleId !== undefined
+          ? "style"
+          : null;
       this.#showMinimal(citations, sources, outcome.kind === "failed");
       return;
     }
+    this.#documentPresentationError = null;
 
     // Refilled rather than merged: the render covers every cited Item, so
     // what it leaves out is no longer cited, and the map's order is the
@@ -424,11 +528,13 @@ export class ReferencesView extends ItemView {
         complete: true,
       },
       errors: this.#errors,
+      ambiguous: this.#ambiguousCandidates,
     });
     this.#store.setState({
       entries,
       listMode: this.#listMode(),
       formattingFailed: false,
+      documentPresentationError: null,
       copy: this.#trackCopy(entries),
     });
   }
@@ -483,9 +589,11 @@ export class ReferencesView extends ItemView {
       sources,
       errors: this.#errors,
       formattingFailed,
+      ambiguous: this.#ambiguousCandidates,
     });
     this.#store.setState({
       ...minimal,
+      documentPresentationError: this.#documentPresentationError,
       copy: this.#trackCopy(minimal.entries),
     });
   }

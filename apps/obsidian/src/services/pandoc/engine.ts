@@ -35,6 +35,11 @@ export interface BibliographyRequest extends SupersedableRequest {
   items: readonly CslItemData[];
   /** CSL style XML; the engine's embedded default style when omitted. */
   styleXml?: string;
+  /**
+   * Citation Locale to render in, which overrides the locale the style names.
+   * Omitted leaves the style's own locale in charge.
+   */
+  locale?: string;
 }
 
 /** One rendered bibliography entry, as typed AST. */
@@ -85,6 +90,11 @@ export interface CitationRequest extends SupersedableRequest {
   items: readonly CslItemData[];
   /** CSL style XML; the engine's embedded default style when omitted. */
   styleXml?: string;
+  /**
+   * Citation Locale to render in, which overrides the locale the style names.
+   * Omitted leaves the style's own locale in charge.
+   */
+  locale?: string;
 }
 
 export type DocumentFormat = "docx" | "html";
@@ -97,6 +107,13 @@ export interface DocumentRequest extends SupersedableRequest {
   bibliography: readonly CslItemData[];
   /** CSL style XML; the engine's embedded default style when omitted. */
   styleXml?: string;
+  /**
+   * Citation Locale citeproc renders in, which overrides the locale the style
+   * names. Omitted leaves the style's own locale in charge. It never becomes
+   * the converted document's own language: a document that declares `lang`
+   * keeps it, and one that declares none acquires none.
+   */
+  locale?: string;
   /** Lua filter sources, run in listed order before citation processing. */
   luaFilters?: readonly string[];
   /** Further files the filters read, such as a resolve map. */
@@ -153,10 +170,11 @@ const BIBLIOGRAPHY_FILE = "bibliography.json";
 /**
  * Instantiate one engine over the Pandoc WASM binary.
  *
- * @param wasmBinary the verified `pandoc.wasm` bytes.
+ * @param wasmBinary the verified `pandoc.wasm` binary, streamed rather than
+ *   materialized.
  */
 export async function createCitationEngine(
-  wasmBinary: BufferSource,
+  wasmBinary: Blob,
 ): Promise<CitationEngine> {
   return new PandocCitationEngine(await createPandocRuntime(wasmBinary));
 }
@@ -201,6 +219,7 @@ class PandocCitationEngine implements CitationEngine {
   async #formatBibliography({
     items,
     styleXml,
+    locale,
     supersedes,
   }: BibliographyRequest): Promise<string> {
     const style = styleInput(styleXml);
@@ -210,6 +229,7 @@ class PandocCitationEngine implements CitationEngine {
         to: "json",
         standalone: false,
         filters: ["citeproc"],
+        ...(locale === undefined ? {} : { metadata: { lang: locale } }),
         ...style.options,
       },
       stdin: JSON.stringify(items),
@@ -224,6 +244,7 @@ class PandocCitationEngine implements CitationEngine {
     citations,
     items,
     styleXml,
+    locale,
     supersedes,
   }: CitationRequest): Promise<string> {
     const style = styleInput(styleXml);
@@ -236,7 +257,10 @@ class PandocCitationEngine implements CitationEngine {
         bibliography: [BIBLIOGRAPHY_FILE],
         // The bibliography is the sidebar's job; this render wants the in-text
         // citations alone.
-        metadata: { "suppress-bibliography": true },
+        metadata: {
+          "suppress-bibliography": true,
+          ...(locale === undefined ? {} : { lang: locale }),
+        },
         ...style.options,
       },
       stdin: citations.join("\n\n"),
@@ -254,6 +278,7 @@ class PandocCitationEngine implements CitationEngine {
     format,
     bibliography,
     styleXml,
+    locale,
     luaFilters = [],
     files = {},
     supersedes,
@@ -263,12 +288,18 @@ class PandocCitationEngine implements CitationEngine {
     );
     const outputName = `output.${format}`;
     const style = styleInput(styleXml);
+    const localePass = locale === undefined ? [] : [LOCALE_FILTER_FILE];
     const { outputFile } = await this.#convert({
       options: {
         from: MARKDOWN_READER,
         to: format,
         standalone: true,
-        filters: [...Object.keys(filterFiles), "citeproc"],
+        filters: [
+          ...Object.keys(filterFiles),
+          ...localePass,
+          "citeproc",
+          ...localePass,
+        ],
         bibliography: [BIBLIOGRAPHY_FILE],
         "output-file": outputName,
         ...style.options,
@@ -277,6 +308,9 @@ class PandocCitationEngine implements CitationEngine {
       files: {
         ...files,
         ...filterFiles,
+        ...(locale === undefined
+          ? {}
+          : { [LOCALE_FILTER_FILE]: citationLocaleFilter(locale) }),
         [BIBLIOGRAPHY_FILE]: JSON.stringify(bibliography),
         ...style.files,
       },
@@ -340,6 +374,37 @@ class PandocCitationEngine implements CitationEngine {
     this.#queue = result.catch(() => undefined);
     return result;
   }
+}
+
+const LOCALE_FILTER_FILE = "citation-locale.lua";
+
+/**
+ * The Citation Locale, applied to citation processing alone. Pandoc reads a
+ * locale from `lang`, which is also the document's own language, so this filter
+ * runs on both sides of citeproc: it lends `lang` to a document that declares
+ * none, and takes its own loan back once citeproc has read it. A document that
+ * declares `lang` is left as it is, and citeproc renders in the locale it names.
+ *
+ * The marker travels through the metadata, which is the only state one filter
+ * pass leaves for the next. Its name carries a token drawn for this conversion
+ * alone, so it names a loan this filter made and nothing a document wrote: a
+ * note that declares the plain key keeps its own `lang` and its own key.
+ */
+function citationLocaleFilter(locale: string): string {
+  const marker = `zotlit-citation-locale-${crypto.randomUUID()}`;
+  return `local MARKER = ${JSON.stringify(marker)}
+
+function Meta(meta)
+  if meta[MARKER] then
+    meta.lang = nil
+    meta[MARKER] = nil
+  elseif not meta.lang then
+    meta.lang = pandoc.MetaString(${JSON.stringify(locale)})
+    meta[MARKER] = true
+  end
+  return meta
+end
+`;
 }
 
 /** The `csl` option and the file it names; both empty for the embedded style. */

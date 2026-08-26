@@ -92,9 +92,12 @@ async function makeHarness({
   formatCitations,
   renderText = (source) => `«${source}»`,
   overrides = {},
+  ambiguousKeys = [],
 }: {
   body: string;
   cited?: Citation[];
+  /** The citekeys the resolution snapshot answers with several candidates for. */
+  ambiguousKeys?: readonly string[];
   /** Whether an engine is installed, which is what the cache answers for. */
   formats?: boolean;
   /** Custom render answer for pending-generation tests. */
@@ -135,6 +138,7 @@ async function makeHarness({
         whenIndexed: () => Promise.resolve(),
       },
       bibliographyRender: {
+        vaultPresentation: { styleId: null, locale: null },
         renderCitations: (citations: readonly string[]) => {
           citationRequests.push({ citations });
           return formatCitations
@@ -180,6 +184,12 @@ async function makeHarness({
         },
       },
       citationText,
+      citationIndex: {
+        resolveCitekey: (citekey: string) =>
+          ambiguousKeys.includes(citekey)
+            ? { kind: "ambiguous", candidates: [] }
+            : { kind: "missing" },
+      },
       citekeyEditor: {
         openCitekey: (citekey: string, pane: unknown) => {
           opened.push([citekey, pane]);
@@ -395,9 +405,33 @@ describe("CitekeyReading", () => {
           "zt-citation-key-unresolved",
         ],
       },
+      // An Ambiguous Citation Key reads as its own state, and a missing key
+      // outranks it wherever a cluster writes both.
+      {
+        body: "[@twin]",
+        cited: [citation("twin", null)],
+        ambiguousKeys: ["twin"],
+        classes: [
+          "zt-citation",
+          "zt-citation-key",
+          "zt-citation-key-ambiguous",
+        ],
+        absent: ["zt-citation-key-unresolved"],
+      },
+      {
+        body: "[@twin; @ghost]",
+        cited: [citation("twin", null), citation("ghost", null)],
+        ambiguousKeys: ["twin"],
+        classes: [
+          "zt-citation",
+          "zt-citation-key",
+          "zt-citation-key-unresolved",
+        ],
+        absent: ["zt-citation-key-ambiguous"],
+      },
     ];
-    for (const { body, cited, classes } of cases) {
-      await using harnessed = await makeHarness({ body, cited });
+    for (const { body, cited, classes, ambiguousKeys, absent } of cases) {
+      await using harnessed = await makeHarness({ body, cited, ambiguousKeys });
       const { process, ctx } = harnessed;
       const el = section(`<p>${body}</p>`);
 
@@ -406,6 +440,9 @@ describe("CitekeyReading", () => {
       const rendered = el.querySelector("span");
       for (const className of classes) {
         expect(rendered?.classList.contains(className)).toBe(true);
+      }
+      for (const className of absent ?? []) {
+        expect(rendered?.classList.contains(className)).toBe(false);
       }
     }
   });

@@ -1,8 +1,8 @@
 ---
 title: "Export a note with citations"
 description: "Export an active Markdown note with citations and a bibliography to DOCX or HTML."
-introduced: "2.1.0-beta.0"
-updated: "2.1.0-beta.0"
+introduced: "2.1.0"
+updated: "2.1.0"
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -11,6 +11,8 @@ import { Steps, Step } from "fumadocs-ui/components/steps";
 import { Command } from "@/components/command";
 
 Export the active Markdown note as a Word document or web page with formatted citations and a bibliography.
+
+For a guided comparison with native Pandoc, follow [Build a Pandoc citation workflow](/docs/tutorial/pandoc-citation-workflow).
 
 ## Before you start
 
@@ -55,7 +57,7 @@ ZotLit uses Better BibTeX when it is available. Otherwise, it uses the Zotero lo
 
 The destination contains a `.docx` Word document or an `.html` web page. The output includes formatted citations and a bibliography.
 
-Export leaves the source note unchanged. The bibliography is generated in the exported document; your Markdown keeps the citations it was generated from. To place a bibliography elsewhere, copy it from the References Sidebar instead. See [What a copy contains](/docs/concepts/how-citekey-links-work#copied-bibliography).
+Export leaves the source note unchanged. The bibliography is generated in the exported document; your Markdown keeps the citations it was generated from. To place a bibliography elsewhere, [copy it from the References Sidebar](/docs/how-to/review-copy-troubleshoot-references#copy-references).
 
 ## Which citations are exported
 

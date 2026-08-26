@@ -4,11 +4,13 @@ import { createContext, useContext } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
+import type { AmbiguousCandidatesOf } from "@/services/citation-index/ambiguity";
 import type {
   Citation,
   DocumentCitationError,
   ReferenceSource,
 } from "@/services/citation-index/service";
+import type { UnusableProperty } from "@/services/pandoc/document-presentation";
 import type { PandocEngineStatus } from "@/services/pandoc/service";
 
 import { buildReferenceEntries } from "./entries";
@@ -69,6 +71,12 @@ export interface ReferencesState {
   engine: PandocEngineStatus;
   /** A completed formatting attempt failed while the engine remained available. */
   formattingFailed: boolean;
+  /**
+   * The property whose value stops the active note's own Citation Presentation,
+   * which is a repair on that note rather than on a vault selection; `null`
+   * while nothing about that note is at fault.
+   */
+  documentPresentationError: UnusableProperty | null;
   /** `false` while the Zotero database cannot be read. */
   dbReady: boolean;
   /** Whether the visible list can be copied, and why not. */
@@ -83,6 +91,7 @@ export function createReferencesStore() {
     listMode: { kind: "minimal" },
     engine: { kind: "absent" },
     formattingFailed: false,
+    documentPresentationError: null,
     dbReady: false,
     copy: { kind: "blocked", reason: "no-note" },
   }));
@@ -125,10 +134,12 @@ export function minimalReferencesState(options: {
   sources: ReadonlyMap<string, ReferenceSource>;
   errors: readonly DocumentCitationError[];
   formattingFailed: boolean;
+  /** The candidates an Ambiguous Citation Key names; see {@link buildReferenceEntries}. */
+  ambiguous?: AmbiguousCandidatesOf;
 }): Pick<ReferencesState, "entries" | "listMode" | "formattingFailed"> {
-  const { citations, sources, errors, formattingFailed } = options;
+  const { citations, sources, errors, formattingFailed, ambiguous } = options;
   return {
-    entries: buildReferenceEntries(citations, sources, { errors }),
+    entries: buildReferenceEntries(citations, sources, { errors, ambiguous }),
     listMode: { kind: "minimal" },
     formattingFailed,
   };

@@ -21,7 +21,7 @@ import type { CITED_BY_PARAMS, REFERENCES_PARAMS } from "./request";
 const SELECTORS = {
   key: "A Zotero key: an 8-character item key, with a 'g<group-id>' suffix for an item in a group library. cited-by takes exactly one of key= or citekey=.",
   citekey:
-    "A citation key, written as it appears in the note body without the leading '@'. It names an item through the citation-key snapshot.",
+    "A citation key, written as it appears in the note body without the leading '@'. It names an item through the citation-key snapshot. A key several items carry in the current library scope names none of them: the answer is AMBIGUOUS_CITEKEY, and details.candidates lists every candidate as { key, libraryID }, so key= selects the intended one.",
   file: "The vault-relative path of one Markdown note, as file=folder/note.md. Any Markdown note answers: a document need not be a Literature Note to cite works.",
   "expect-source":
     "The Zotero source the call expects, checked before any data load. It asserts the Zotero source, not the vault; put vault=<vault-name> before the command name to select the vault.",
@@ -36,6 +36,8 @@ const ENTRY_KINDS = {
     "A cited work the connected Zotero source holds. Adds key, citekey, summary, and linkpath; linkpath is null while the work has no Literature Note.",
   unresolved:
     "A citation key that names no item in the connected Zotero source. Adds citekey.",
+  ambiguous:
+    "A citation key several items carry in the current library scope, so it names none of them and the document cites no one work here. Adds citekey and candidates, each candidate { key, libraryID }; pass one candidate key to cited-by or zotlit:template-data to work with that item.",
   missing:
     "A work the index cites that the Zotero source no longer holds. Adds key.",
   malformed:
@@ -92,10 +94,10 @@ NAME
   zotlit-citations - read the vault's citation facts from the command line
 
 SYNOPSIS
-  obsidian-cli zotlit:cited-by (key=<zotero-key> | citekey=<citation-key>) \\
+  obsidian zotlit:cited-by (key=<zotero-key> | citekey=<citation-key>) \\
     [expect-source=<source-id>]
-  obsidian-cli zotlit:references file=<vault-path> [expect-source=<source-id>]
-  obsidian-cli zotlit:citations-guide
+  obsidian zotlit:references file=<vault-path> [expect-source=<source-id>]
+  obsidian zotlit:citations-guide
 
 DESCRIPTION
   The Citation Index answers two questions: which notes cite one Zotero item
@@ -106,9 +108,9 @@ DESCRIPTION
   call zotlit:template-data with the Zotero key an answer reports.
 
 WORKFLOW
-  1. Run obsidian-cli help zotlit and use only the commands it reports.
-  2. Run obsidian-cli zotlit:citations-guide.
-  3. Run obsidian-cli zotlit:template-status and record identity.source.id,
+  1. Run obsidian help zotlit and use only the commands it reports.
+  2. Run obsidian zotlit:citations-guide.
+  3. Run obsidian zotlit:template-status and record identity.source.id,
      then pass expect-source=<source-id> to every later call.
   4. Query with cited-by or references.
   5. Open each reported path and read it at the reported position.

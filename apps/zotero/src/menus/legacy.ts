@@ -1,6 +1,6 @@
 import { around } from "monkey-around";
 
-import { requireLabel } from "@/lib/l10n";
+import { requireMessage } from "@/lib/l10n";
 import { logger as appLogger } from "@/lib/logger";
 import {
   onReaderPrototypeAvailable,
@@ -142,18 +142,18 @@ function registerPopup(
 }
 
 export async function registerLegacyItemMenu(): Promise<Disposable> {
-  const submenuLabel = await requireLabel("zotlit-menu-submenu");
-  const openLabel = await requireLabel("zotlit-menu-item-open");
-  const copyLabel = await requireLabel("zotlit-menu-item-copy-key");
-  const updateLabel = await requireLabel("zotlit-menu-item-update");
-  const updateMetaLabel = await requireLabel(
+  const submenuLabel = await requireMessage("zotlit-menu-submenu");
+  const openLabel = await requireMessage("zotlit-menu-item-open");
+  const copyLabel = await requireMessage("zotlit-menu-item-copy-key");
+  const updateLabel = await requireMessage("zotlit-menu-item-update");
+  const updateMetaLabel = await requireMessage(
     "zotlit-menu-item-update-metadata",
   );
-  const childNotesLabel = await requireLabel(
+  const childNotesLabel = await requireMessage(
     "zotlit-menu-item-import-child-notes",
   );
-  const notesLabel = await requireLabel("zotlit-menu-item-import-notes");
-  const exploreLabel = await requireLabel("zotlit-menu-item-explore");
+  const notesLabel = await requireMessage("zotlit-menu-item-import-notes");
+  const exploreLabel = await requireMessage("zotlit-menu-item-explore");
 
   return registerPopup("#zotero-itemmenu", (popup) => {
     addSeparator(popup);
@@ -233,9 +233,9 @@ function appendReaderItems(
 }
 
 export async function registerLegacyReaderMenus(): Promise<Disposable> {
-  const pageLabel = await requireLabel("zotlit-menu-reader-page-open");
-  const exploreLabel = await requireLabel("zotlit-menu-reader-annot-explore");
-  const copyLabel = await requireLabel("zotlit-menu-reader-annot-copy-key");
+  const pageLabel = await requireMessage("zotlit-menu-reader-page-open");
+  const exploreLabel = await requireMessage("zotlit-menu-reader-annot-explore");
+  const copyLabel = await requireMessage("zotlit-menu-reader-annot-copy-key");
   let unload: (() => void) | null = null;
 
   const hook = (): boolean => {

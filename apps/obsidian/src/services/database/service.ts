@@ -2,6 +2,8 @@ import { existsSync, watch } from "node:fs";
 import type { FSWatcher, WatchOptions } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { getSchemaVersions, SUPPORTED_SCHEMA_VERSIONS } from "@zotlit/db";
+import type { ZoteroSchemaVersions } from "@zotlit/db";
 import { createClient } from "@zotlit/db/client/node";
 import type {
   DatabaseOptions,
@@ -10,32 +12,38 @@ import type {
 import { createNanoEvents } from "@zotlit/shared/nanoevents";
 
 import { ZOTERO_DB_FILENAME, ZOTERO_WAL_FILENAME } from "@/lib/constants";
-import { DisposableAbortController } from "@/lib/disposables";
 import { getLogger } from "@/lib/log";
 import { Service } from "@/services/service-base";
 import type { Settings, SettingsService } from "@/services/settings/service";
 import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 
+import { readParentBeside } from "./read-parent";
 import {
   buildSqliteUri,
   prepareRead,
-  reapStaleReadTemps,
   snapshotSource,
   sourceFingerprintsEqual,
+  walGenerationSize,
 } from "./read-source";
 import type {
   ConfiguredReadMode,
   EffectiveReadMode,
   PreparedRead,
-  ReadFallbackNotice,
+  ReadFallbackReason,
   SourceFingerprint,
 } from "./read-source";
+import { reapReadClones } from "./reap-temps";
 
 const logger = getLogger("database");
 const DB_OPTIONS: DatabaseOptions = {
   jit: true,
 };
-const WATCH_DEBOUNCE_MS = 2000;
+const WATCH_DEBOUNCE_MS = 1200;
+// Immutable mode never clones, so there is no self-echo to outwait: an fs
+// tick fires when the main file itself changed, and the companion sends its
+// Freshness Signal only after its Checkpoint attempt settles. Nothing here
+// waits on another application; the debounce only coalesces event bursts.
+const IMMUTABLE_WATCH_DEBOUNCE_MS = 300;
 // `persistent: false` so no watcher keeps Node's event loop alive on its own —
 // Obsidian (Electron) owns the loop, and a leaked watcher must not block
 // process exit if plugin disposal fails.
@@ -68,11 +76,6 @@ export interface DatabaseEvents {
    * gate in {@link DatabaseService}). A UI subscriber renders the notice.
    */
   "db-file-missing": () => void;
-  /**
-   * The configured read mode fell back to another mode. Raised at most once
-   * per fallback kind per launch. A UI subscriber renders the notice.
-   */
-  "read-fallback": (notice: ReadFallbackNotice) => void;
 }
 
 export interface DatabaseServiceDeps {
@@ -115,15 +118,17 @@ export class DatabaseService extends Service<void> {
   #watchTimer: number | null = null;
   #watchTrusted = false;
   #sourceFingerprint: SourceFingerprint | null = null;
+  #schemaVersions: ZoteroSchemaVersions | null = null;
   #refreshInFlight: Promise<void> | null = null;
   #refreshAgain = false;
   #leaseCount = 0;
   #deferredRefresh: PromiseWithResolvers<void> | null = null;
   #torndown = false;
   #lastSourcePath: string | null = null;
+  #sweptReadParent: string | null = null;
   #lastConfiguredMode: ConfiguredReadMode | null = null;
   #lastAutoRefresh: boolean | null = null;
-  readonly #shownFallbackNotices = new Set<string>();
+  readonly #loggedReadFallbacks = new Set<ReadFallbackReason>();
   /** Gate so the fresh-device signal raises at most once per launch. */
   #missingDbSignalled = false;
 
@@ -250,11 +255,6 @@ export class DatabaseService extends Service<void> {
     const settings = await this.#settings.loaded;
 
     await using stack = new AsyncDisposableStack();
-    const reapAbort = stack.use(new DisposableAbortController());
-    void reapStaleReadTemps(reapAbort.signal).catch((error) => {
-      if (reapAbort.signal.aborted) return;
-      logger.warn("Failed to reap stale database read temps", { error });
-    });
     stack.defer(() => this.#disposeWatchers());
     stack.defer(async () => {
       await this.#activeReadStack?.disposeAsync();
@@ -382,6 +382,7 @@ export class DatabaseService extends Service<void> {
       const settings = this.#settings.current ?? (await this.#settings.loaded);
       const sourcePath = this.#zoteroPref.databasePath;
       const configuredMode = settings["zotero.read-mode"];
+      this.#reapReadParent(sourcePath);
       // Fingerprinted before the read, never after: a Zotero write that lands
       // while we clone then still differs from what we record, so the next
       // watcher tick refreshes instead of being gated away as our own echo.
@@ -401,7 +402,8 @@ export class DatabaseService extends Service<void> {
       const uri = buildSqliteUri(prepared.path, prepared.uriOptions);
       const client = createClient(uri, DB_OPTIONS);
       refreshStack.use(client.$client);
-      this.#signalReadFallback(prepared);
+      this.#logReadFallback(prepared);
+      this.#reportSchemaVersions(client);
 
       const previousReadStack = this.#activeReadStack;
       // Commit the new client before releasing the old read stack.
@@ -458,6 +460,30 @@ export class DatabaseService extends Service<void> {
   }
 
   /**
+   * A snapshot placed beside the database leaves its residue there, where the
+   * plugin-load sweep of the system temp folder never looks. Sweep that parent
+   * whenever the bound database path moves it, so a crashed session leaves
+   * nothing next to the user's Zotero data and a newly bound path is cleared
+   * too. Fire-and-forget, as at load: a sweep never throws, and a refresh never
+   * waits on housekeeping.
+   *
+   * Residue is recognized by owner PID, which is meaningful on one machine only.
+   * A data directory shared live between two machines — an external drive that
+   * is also cloud-synced — can therefore read the other machine's PID as dead.
+   * The divert gate keeps that setup rare: a synced folder normally sits on the
+   * OS volume, where snapshots never leave the temp folder in the first place.
+   *
+   * @see {@link reapReadClones} for what counts as residue.
+   */
+  #reapReadParent(sourcePath: string): void {
+    const parent = readParentBeside(sourcePath);
+    if (parent === this.#sweptReadParent) return;
+    this.#sweptReadParent = parent;
+    logger.debug("Sweeping read snapshots beside the database", { parent });
+    void reapReadClones({ parent });
+  }
+
+  /**
    * Fresh-device handling: when a refresh fails because the resolved database
    * file is absent (a synced vault landing on a machine with a custom Zotero
    * location where auto-detect misses), emits `db-file-missing`; a
@@ -475,15 +501,50 @@ export class DatabaseService extends Service<void> {
     this.#emitter.emit("db-file-missing");
   }
 
-  #signalReadFallback(prepared: PreparedRead): void {
-    if (!prepared.fallbackNotice) return;
-    if (this.#shownFallbackNotices.has(prepared.fallbackNotice)) return;
-    this.#shownFallbackNotices.add(prepared.fallbackNotice);
+  /**
+   * Records the Zotero schema versions once per distinct pair — on the first
+   * read, and again if Zotero migrates the database mid-session. `info` while
+   * the versions stay inside the verified range, `warn` once they leave it,
+   * where a query may read the wrong shape. The read proceeds either way, and a
+   * failed check never fails the refresh: an unreadable `version` table says
+   * nothing about the tables the queries use.
+   */
+  #reportSchemaVersions(client: NodeDatabaseClient): void {
+    let versions: ZoteroSchemaVersions;
+    try {
+      versions = getSchemaVersions(client);
+    } catch (error) {
+      logger.debug("Zotero schema version unreadable", { error });
+      return;
+    }
+    const previous = this.#schemaVersions;
+    this.#schemaVersions = versions;
+    if (
+      previous?.userdata === versions.userdata &&
+      previous.compatibility === versions.compatibility
+    )
+      return;
+    const fields = { ...versions, supportedRange: SUPPORTED_SCHEMA_VERSIONS };
+    if (versions.supported)
+      logger.info(
+        "Zotero schema version is within the supported range",
+        fields,
+      );
+    else
+      logger.warn(
+        "Zotero schema version is outside the range ZotLit is verified against",
+        fields,
+      );
+  }
+
+  #logReadFallback(prepared: PreparedRead): void {
+    if (!prepared.fallbackReason) return;
+    if (this.#loggedReadFallbacks.has(prepared.fallbackReason)) return;
+    this.#loggedReadFallbacks.add(prepared.fallbackReason);
     logger.warn("Database read mode fell back", {
-      fallbackNotice: prepared.fallbackNotice,
+      fallbackReason: prepared.fallbackReason,
       effectiveMode: prepared.effectiveMode,
     });
-    this.#emitter.emit("read-fallback", prepared.fallbackNotice);
   }
 
   /**
@@ -579,22 +640,31 @@ export class DatabaseService extends Service<void> {
     const rescheduled = !!this.#watchTimer;
     if (this.#watchTimer) window.clearTimeout(this.#watchTimer);
     this.#watchTrusted ||= trusted;
+    const debounceMs =
+      this.#readMode === "immutable"
+        ? IMMUTABLE_WATCH_DEBOUNCE_MS
+        : WATCH_DEBOUNCE_MS;
     this.#watchTimer = window.setTimeout(() => {
       this.#watchTimer = null;
       const wasTrusted = this.#watchTrusted;
       this.#watchTrusted = false;
       void this.#refreshIfSourceMoved({ trusted: wasTrusted });
-    }, WATCH_DEBOUNCE_MS);
+    }, debounceMs);
     logger.trace("Watch debounce timer {action}", {
       action: rescheduled ? "reset" : "started",
-      debounceMs: WATCH_DEBOUNCE_MS,
+      debounceMs,
     });
   }
 
   async #refreshIfSourceMoved({ trusted }: WatchSignal): Promise<void> {
-    if (!trusted && !(await this.#sourceMoved())) {
-      logger.debug("Watcher tick ignored, database unchanged since last read");
-      return;
+    if (!trusted) {
+      const sourceMoved = await this.#sourceMoved();
+      if (this.#readMode !== "immutable" && !sourceMoved) {
+        logger.debug(
+          "Watcher tick ignored, database unchanged since last read",
+        );
+        return;
+      }
     }
     // Both rechecked after the gate's await. The timer clears itself before that
     // await, so `#cancelWatchTimer` can no longer stop a tick inside it, and the
@@ -620,11 +690,20 @@ export class DatabaseService extends Service<void> {
    */
   async #sourceMoved(): Promise<boolean> {
     const previous = this.#sourceFingerprint;
-    if (!previous) return true;
     const current = await this.#trySnapshotSource(
       this.#zoteroPref.databasePath,
     );
-    return !current || !sourceFingerprintsEqual(previous, current);
+    const moved =
+      !previous || !current || !sourceFingerprintsEqual(previous, current);
+    logger.debug("Watcher source fingerprint checked", {
+      verdict: moved ? "changed" : "unchanged",
+      readMode: this.#readMode,
+      previousWalState: previous?.wal.state ?? "unavailable",
+      previousWalSize: walGenerationSize(previous?.wal),
+      currentWalState: current?.wal.state ?? "unavailable",
+      currentWalSize: walGenerationSize(current?.wal),
+    });
+    return moved;
   }
 
   /** Fail-soft {@link snapshotSource}: `null` where that function would throw. */

@@ -27,7 +27,7 @@ import type {
 import { parseNote } from "./note-parser";
 import type { ParseNoteDeps } from "./note-parser";
 
-const packageRoot = getPackageRoot();
+const packageRoot = getPackageRoot(import.meta.filename);
 
 // Keep the real DOM-free parsers; only the DB-backed legs are stubbed per test.
 vi.mock("@zotlit/db", async (importOriginal) => {
@@ -175,9 +175,40 @@ describe("schema gate", () => {
     expect(parseNote(TurndownService, "", deps)).toBe("");
   });
 
-  it("returns an empty string when no schema container is present", () => {
-    expect(parseNote(TurndownService, "<p>plain note</p>", deps)).toBe("");
+  it("converts a Plain HTML Child Note with basic formatting", () => {
+    const html = `
+      <h2>Summary of a Research Article</h2>
+      <p><strong>Source:</strong> Academic literature review</p>
+      <div>
+        <h3>Key findings</h3>
+        <ul>
+          <li>The method improves consistency.</li>
+          <li>The approach scales to large areas.</li>
+        </ul>
+      </div>
+    `;
+
+    expect(parseNote(TurndownService, html, deps)).toBe(
+      "## Summary of a Research Article\n\n" +
+        "**Source:** Academic literature review\n\n" +
+        "### Key findings\n\n" +
+        "- The method improves consistency.\n" +
+        "- The approach scales to large areas.",
+    );
   });
+
+  it.each(["6invalid", "0x6", "6e0"])(
+    "uses basic formatting when schema marker %s is malformed",
+    (schemaVersion) => {
+      expect(
+        parseNote(
+          TurndownService,
+          `<div data-schema-version="${schemaVersion}"><p><span style="color: red">Summary</span></p></div>`,
+          deps,
+        ),
+      ).toBe("Summary");
+    },
+  );
 
   it("sees through the zotero-note znv1 storage wrapper", () => {
     const md = parseNote(
@@ -263,6 +294,70 @@ describe("highlight annotation", () => {
         "(zotero://open/library/items/T2P8T29G?annotation=C2DF35H3&page=62)",
     );
   });
+
+  it.each(["#e56eee", "#aaaaaa", "#a6507b"])(
+    "maps %s excerpts to a custom emoji and preserves the backlink",
+    (color) => {
+      const md = parseNote(
+        TurndownService,
+        note(
+          annot(
+            "highlight",
+            {
+              attachmentURI: ATTACHMENT,
+              annotationKey: "C2DF35H3",
+              color,
+              pageLabel: "62",
+            },
+            "Highlighted text",
+          ),
+        ),
+        {
+          ...deps,
+          useColoredHighlightSyntax: true,
+          highlightMappings: {
+            magenta: { output: "custom", customEmoji: "👩‍🔬" },
+            gray: { output: "custom", customEmoji: "👩‍🔬" },
+            plum: { output: "custom", customEmoji: "👩‍🔬" },
+          },
+        },
+      );
+
+      expect(md).toBe(
+        "[==👩‍🔬Highlighted text==](zotero://open/library/items/T2P8T29G?annotation=C2DF35H3&page=62)",
+      );
+    },
+  );
+
+  it.each(["", "🔴🔵"])(
+    "keeps linked HTML for an incomplete custom mapping: %j",
+    (customEmoji) => {
+      const md = parseNote(
+        TurndownService,
+        note(
+          annot(
+            "highlight",
+            {
+              attachmentURI: ATTACHMENT,
+              annotationKey: "C2DF35H3",
+              color: "#2ea8e5",
+            },
+            "Highlighted text",
+          ),
+        ),
+        {
+          ...deps,
+          useColoredHighlightSyntax: true,
+          highlightMappings: { blue: { output: "custom", customEmoji } },
+        },
+      );
+
+      expect(md).toContain('[<mark class="zotlit-hl" data-color="blue"');
+      expect(md).toContain(
+        "](zotero://open/library/items/T2P8T29G?annotation=C2DF35H3)",
+      );
+    },
+  );
 
   it("keeps linked HTML for an unsupported color when enabled", () => {
     const md = parseNote(
@@ -674,7 +769,7 @@ describe("annotation template mode", () => {
       ...deps,
       renderAnnotationParagraph,
     });
-    expect(md).toContain("[@Hensher2011, p. 62]");
+    expect(md).toContain("[@Hensher2011, {p. 62}]");
   });
 });
 
@@ -894,7 +989,7 @@ describe("citation resolution", () => {
           facade.render("cite", citekeysToCiteTemplateData(items)),
       },
     );
-    expect(md).toContain("[-@Hensher2011, p. 62]");
+    expect(md).toContain("[-@Hensher2011, {p. 62}]");
   });
 
   it("renders suppress-author as a Pandoc -@key prefix", () => {

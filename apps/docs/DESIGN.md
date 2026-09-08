@@ -2,7 +2,12 @@
 
 Theme: **"Manuscript & Machine"** — cream ground, navy ink, deep-orange accent.
 One token system (`--color-fd-*` overrides in `src/styles.css`) drives all
-surfaces: landing, changelog, blog, docs.
+surfaces: landing, changelog, blog, docs, and the Template Workbench.
+
+Compose each surface around the reader's task. Editorial pages lead with
+content; the Workbench gives space to editing and inspecting the result.
+Apply the shared brand rules together with the relevant per-surface section.
+Use [the brand specification](../../docs/brand.md) for logo and wordmark assets.
 
 ## Mechanism
 
@@ -68,7 +73,7 @@ tracking, weight 500–600. Real uppercase over the bundled mono replaces the ol
 stays razor-legible at any size, including shrunk-down OG cards, where
 synthesized small-caps crowd and blur.
 
-Every apparatus label site-wide is mono uppercase:
+On editorial and docs-chrome surfaces, apparatus labels are mono uppercase:
 
 - Home nav links
 - Landing eyebrow, feature terms, and feature links
@@ -85,17 +90,31 @@ text, not labels — so the v2 banner notice, tooltips, and any
 sentence-shaped copy keep their upright case and sans body voice. The Archivo
 wordmark likewise stays outside label treatment.
 
+The [Template Workbench](WORKBENCH-DESIGN.md) uses Inter sentence case
+for its utility chrome, including labels and pane headings.
+
 ## Font loading
 
 Fontsource serves all four faces from the package's own assets: the `@import`s
 at the top of `src/styles.css` register them, and the `@theme inline` block in
-the same file assigns the roles. Gelasio preloads in `src/routes/__root.tsx`,
-upright and italic (serif display paints on essentially every route). Inter goes
-unpreloaded — sans is the app-wide body default, but its metric-adjusted
-fallback swaps shift-free, so an eager fetch buys little.
+the same file assigns the roles. Metric-adjusted local fallback faces in that
+stylesheet preserve the shift-free swaps that `next/font` generated before the
+TanStack Start migration. The Inter and Gelasio overrides come from Next.js
+16.3.0's metrics for these Google Font families. The mono fallback stands in
+for a fixed-pitch face, so it names monospace locals instead of the
+proportional Arial `next/font` emits for every family — a proportional stand-in
+matches Plex Mono across mixed-case prose and then runs ~38% wide on the short
+uppercase apparatus labels, which is where the swap moves the layout. Those
+locals carry no `size-adjust`: every monospace face shares Plex Mono's 0.6em
+advance, so the overrides pin the vertical metrics alone.
+
+Gelasio's upright and italic latin faces preload in `src/routes/__root.tsx`
+because serif display paints on essentially every route. Inter stays
+unpreloaded because its adjusted fallback stabilizes the app-wide body and
+chrome until the real face loads.
 
 IBM Plex Mono loads three explicit weights (400/500/600 — Plex Mono isn't a
-variable font), unpreloaded, swapping shift-free from a system-mono fallback.
+variable font), unpreloaded, swapping from its monospace local fallback.
 Its `@theme inline` `--font-mono` override reroutes both the `font-mono` utility
 and every `var(--font-mono)` reference onto it in one lever.
 
@@ -103,6 +122,11 @@ The Archivo wordmark subset needs no preload — it sits under Vite's
 `assetsInlineLimit`, so the build inlines it into the stylesheet.
 
 ## Per-surface
+
+### Template Workbench (`/workbench`)
+
+Extracted to [WORKBENCH-DESIGN.md](WORKBENCH-DESIGN.md) — audience, layout,
+control vocabulary, typography, responsive folds, and the enforcement table.
 
 ### Landing (`src/routes/_home/index.tsx`)
 

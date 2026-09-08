@@ -42,7 +42,7 @@ describe("managed Better BibTeX", () => {
       ),
       downloadUrl: `https://github.com/retorquere/zotero-better-bibtex/releases/download/v${PINNED_BETTER_BIBTEX_VERSION}/${archive}`,
       sha256:
-        "2d914ebb174c2c590ecff741a6903f1979065b42740f301d938ec2cb6c03e4d6",
+        "3a4d080ec94153a8c24bf8275689c5f946d99e314b6ae0fab5060d6970f56388",
     });
   });
 

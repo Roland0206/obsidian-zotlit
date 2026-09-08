@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { dirname } from "node:path/posix";
-import { pathToFileURL } from "node:url";
 import { FileSystemAdapter, Notice, normalizePath } from "obsidian";
 import type { Vault } from "obsidian";
 
@@ -8,6 +7,8 @@ import type { Attachment, Item } from "@zotlit/db";
 import { attachmentAbsPath } from "@zotlit/db/path";
 
 import { getLogger } from "@/lib/log";
+import { attachmentSourceOrigin } from "@/services/attachment-import/service";
+import type { SourceOrigin } from "@/services/attachment-import/service";
 import type { Settings } from "@/services/settings/schema";
 import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 
@@ -114,16 +115,6 @@ export function contractPdfFolderPath(
   return path ? dirname(path) : undefined;
 }
 
-export function rewritePdfFileUrl(
-  content: string,
-  input: { sourcePdfPath?: string | null; vaultPdfPath?: string | null },
-): string {
-  if (!input.sourcePdfPath || !input.vaultPdfPath) return content;
-  return content
-    .split(pathToFileURL(input.sourcePdfPath).href)
-    .join(input.vaultPdfPath);
-}
-
 export function contractFrontmatter(
   contract: AdapterPlacementContract | null,
 ): Record<string, unknown> | undefined {
@@ -136,17 +127,24 @@ export function contractFrontmatter(
   };
 }
 
-export function firstPdfAttachmentPath(
+export interface PdfAttachmentSource {
+  path: string;
+  origin: SourceOrigin;
+}
+
+export function firstPdfAttachmentSource(
   attachments: readonly Attachment[],
   zoteroPref: Pick<ZoteroPrefService, "dataDir" | "baseAttachmentPath">,
-): string | null {
+): PdfAttachmentSource | null {
   for (const attachment of attachments) {
     if (!isPdfAttachment(attachment)) continue;
+    const origin = attachmentSourceOrigin(attachment);
+    if (!origin) continue;
     const path = attachmentAbsPath(attachment, {
       dataDir: zoteroPref.dataDir,
       baseAttachmentPath: zoteroPref.baseAttachmentPath,
     });
-    if (path) return path;
+    if (path) return { path, origin };
   }
   return null;
 }

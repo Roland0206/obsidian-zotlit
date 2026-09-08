@@ -48,7 +48,11 @@ export interface LiveUpdateEvents {
    * the companion's fallback when the id list is too long for an `obsidian://`
    * URL. Carries the raw item ids; the subscriber owns resolution and the modal.
    */
-  "update-many": (event: { items: number[]; scope: UpdateScope }) => void;
+  "update-many": (event: {
+    items: number[];
+    scope: UpdateScope;
+    profileId?: string;
+  }) => void;
   /**
    * A batch note-import requested over `PUT /zotero-notes` — the companion's
    * fallback when the id list is too long for an `obsidian://` URL.
@@ -221,7 +225,17 @@ export class LiveUpdateService extends Service<void> {
     });
 
     const server = serve(
-      { fetch: app.fetch, port: this.#port, hostname: this.#hostname },
+      {
+        fetch: app.fetch,
+        port: this.#port,
+        hostname: this.#hostname,
+        // The listener swaps its own `Request`/`Response` classes into the
+        // globals unless told otherwise, and those globals belong to the whole
+        // Obsidian window. WebAssembly streaming brand-checks the native
+        // `Response`, so a swapped-in class stops the Pandoc engine from
+        // instantiating. The listener keeps the native classes instead.
+        overrideGlobalObjects: false,
+      },
       (info) => {
         this.#listening = true;
         this.#refreshAvailability();

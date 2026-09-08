@@ -1,11 +1,15 @@
-import type { Workspace } from "obsidian";
+import type { App } from "obsidian";
 import type { DragEvent } from "react";
 
 import type { AnnotViewItem } from "@zotlit/db";
 
+import * as m from "@/lib/i18n/generated/messages";
 import { getLogger } from "@/lib/log";
+import { BaseNotice } from "@/lib/notice";
+import { profileRecoveryNotice } from "@/lib/profile-recovery";
 import type { AttachmentImport } from "@/services/attachment-import/service";
 import type { NoteFeature } from "@/services/note-feature";
+import { ProfileAnnotationError } from "@/services/template/service";
 
 const logger = getLogger(["views", "annot-view"]);
 
@@ -13,8 +17,9 @@ const logger = getLogger(["views", "annot-view"]);
 const SOURCE_TAG = "zotlit-annot-drag";
 
 export interface DragInsertDeps {
-  workspace: Workspace;
+  app: App;
   noteFeature: Pick<NoteFeature, "renderAnnotation">;
+  notify: (message: string | DocumentFragment) => void;
   /** Pre-prepared attachment-import handle for the active note. */
   getImportHandle: () => AttachmentImport | null;
   /**
@@ -30,22 +35,42 @@ export interface DragInsertDeps {
  * payload (Obsidian inserts it natively on drop) and, when the drop lands in an
  * editor, flushes the annotation's image excerpt into the vault — mirroring v1's
  * templated drag-insert.
+ *
+ * When the render cannot run, the drag is cancelled and a notice says so; the
+ * card disables its handle ahead of time via the store's `dragTarget`, so
+ * this branch is the last line, not the usual path.
  */
 export function createDragInsertHandler(deps: DragInsertDeps) {
   return (evt: DragEvent<HTMLElement>, annot: AnnotViewItem): void => {
     const handle = deps.getImportHandle();
-
-    const rendered = handle
-      ? deps.noteFeature.renderAnnotation(annot.itemID, {
-          attachmentImport: handle,
-        })
-      : null;
-
     evt.dataTransfer.dropEffect = "copy";
 
-    if (rendered == null || handle == null) {
-      // Fallback: plain text when the template/import isn't ready.
+    let rendered: string | null = null;
+    try {
+      rendered = handle
+        ? deps.noteFeature.renderAnnotation(annot.itemID, {
+            attachmentImport: handle,
+          })
+        : null;
+    } catch (error) {
+      if (!(error instanceof ProfileAnnotationError)) throw error;
       evt.dataTransfer.setData("text/plain", annot.text ?? annot.key);
+      deps.notify(
+        error.diagnostic.code === "unknown-literature-note-profile"
+          ? profileRecoveryNotice(deps.app, error.diagnostic)
+          : error.message,
+      );
+      deps.onSettled();
+      return;
+    }
+
+    if (rendered == null || handle == null) {
+      logger.warn("Drag-insert cancelled", {
+        annotationID: annot.itemID,
+        reason: handle == null ? "no-import-handle" : "render-unavailable",
+      });
+      evt.preventDefault();
+      new BaseNotice(m.annot_view_drag_unavailable());
       return;
     }
 
@@ -53,7 +78,7 @@ export function createDragInsertHandler(deps: DragInsertDeps) {
     evt.dataTransfer.setData("text/plain", rendered);
     evt.dataTransfer.setData(SOURCE_TAG, timestamp);
 
-    const { workspace } = deps;
+    const { workspace } = deps.app;
     const win = (evt.target as HTMLElement).win;
 
     const cleanup = () => {
@@ -73,9 +98,13 @@ export function createDragInsertHandler(deps: DragInsertDeps) {
       }
       cleanup();
     });
-    win.addEventListener("dragend", onDragEnd, { once: true });
-    function onDragEnd(): void {
+    // Reached only when no editor drop ran (the drop path detaches this
+    // listener), so the excerpt this render queued must not ride along with
+    // the next drop's flush.
+    const onDragEnd = (): void => {
+      handle.discard();
       cleanup();
-    }
+    };
+    win.addEventListener("dragend", onDragEnd, { once: true });
   };
 }

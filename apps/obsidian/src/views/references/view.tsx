@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 
 import { writeClipboardRichText } from "@/lib/clipboard";
+import type { Held } from "@/lib/held-reads";
 import * as m from "@/lib/i18n/generated/messages";
 import { getLogger } from "@/lib/log";
 import { BaseNotice } from "@/lib/notice";
@@ -32,11 +33,15 @@ import {
   samePresentation,
 } from "@/services/pandoc/document-presentation";
 import type {
+  DocumentPresentationFailure,
   DocumentPresentation,
-  UnusableProperty,
 } from "@/services/pandoc/document-presentation";
-import type { BibliographyRenderCache } from "@/services/pandoc/render-cache";
+import type {
+  BibliographyRenderCache,
+  BibliographyRenderResult,
+} from "@/services/pandoc/render-cache";
 import type { PandocEngineService } from "@/services/pandoc/service";
+import type { ProfileReader } from "@/services/profile/service";
 
 import { createReferenceActions, ReferenceActionsContext } from "./actions";
 import type { CopyBibliographySnapshot, ReferenceActions } from "./actions";
@@ -67,7 +72,7 @@ export interface ReferencesViewDeps {
   db: Pick<DatabaseService, "state" | "client" | "ready" | "on">;
   citationIndex: Pick<
     CitationIndex,
-    "getDocumentCitationSet" | "resolveCitekey" | "on"
+    "getDocumentCitationSet" | "resolveCitekey" | "resolution" | "on"
   >;
   /** Names the Library each candidate of an Ambiguous Citation Key lives in. */
   libraryScope: Pick<LibraryScopeService, "current">;
@@ -77,7 +82,7 @@ export interface ReferencesViewDeps {
    * The active document's formatted citations, which say whether that document
    * shows Entry Serials — the gutter follows what the citations show.
    */
-  citationText: Pick<CitationText, "peek" | "load" | "on">;
+  citationText: Pick<CitationText, "peek" | "on">;
   pandocEngine: Pick<
     PandocEngineService,
     "getStatus" | "subscribe" | "decline"
@@ -87,6 +92,7 @@ export interface ReferencesViewDeps {
     BibliographyRenderCache,
     "render" | "on" | "vaultPresentation"
   >;
+  profile: ProfileReader;
   /** Reveals the engine row in settings, where the install lives. */
   openSettings: () => void;
   /** Reveals the Citation and References Style row in settings. */
@@ -101,7 +107,7 @@ export class ReferencesView extends ItemView {
    * order. Kept across reloads so an entry that is already formatted never
    * falls back to its summary mid-edit.
    */
-  readonly #rendered = new Map<string, RenderedReference>();
+  readonly #onScreen = new Map<string, RenderedReference>();
   /**
    * Entry Marker ownership of the last completed render for the current style,
    * or `null` while the list on screen is the minimal one.
@@ -113,8 +119,10 @@ export class ReferencesView extends ItemView {
   #formattingFailed = false;
   #root: Root | null = null;
   #actions: ReferenceActions | null = null;
-  /** Bumped per reload; an older render that finishes late is discarded. */
-  #generation = 0;
+  /** Bumped when copy readiness moves to another on-screen result. */
+  #copyGeneration = 0;
+  /** The Held Read whose events can repaint this list. */
+  #renderKey: string | null = null;
   /** Bumped per rescan, the same way, since a query may await a file read. */
   #scan = 0;
   /** The Markdown note the current list was read from; `null` for none. */
@@ -131,7 +139,7 @@ export class ReferencesView extends ItemView {
    * The note property that put the current minimal list on screen; `null` while
    * the note's own presentation is not what stopped the render.
    */
-  #documentPresentationError: UnusableProperty | null = null;
+  #documentPresentationError: DocumentPresentationFailure | null = null;
   /** Where the current list's render stands, as copy readiness reads it. */
   #formatting: ReferencesFormatting = "pending";
   /** Copy readiness as it was last published, so only a change is logged. */
@@ -207,7 +215,21 @@ export class ReferencesView extends ItemView {
     // differently, so the active document's Citations may resolve to a
     // different Item — or a citekey that resolved before now resolves to
     // none — regardless of which document changed to trigger the rebuild.
-    this.register(citationIndex.on("resolution-changed", () => this.#rescan()));
+    // The resolution state is published on its own, because a settle that
+    // leaves the Citations identical — every key still unresolved — skips the
+    // reload, and the pending label must still give way to the verdict.
+    this.register(
+      citationIndex.on("resolution-changed", () => {
+        this.#publishResolution();
+        this.#rescan();
+      }),
+    );
+    // A rebuild that settles with the maps unchanged emits no
+    // resolution-changed — only cited-by-invalidated announces the state
+    // flip — so this is what returns the pending label to a verdict.
+    this.register(
+      citationIndex.on("cited-by-invalidated", () => this.#publishResolution()),
+    );
     this.register(citationIndex.on("membership-changed", () => this.#rescan()));
     this.registerEvent(app.metadataCache.on("changed", () => this.#rescan()));
     // What the document's own citations show decides what this gutter shows,
@@ -220,16 +242,26 @@ export class ReferencesView extends ItemView {
     this.register(db.on("changed", () => this.#reload()));
     this.register(pandocEngine.subscribe(() => this.#reload()));
     // What the cache holds is what this pane shows, so its wholesale drop —
-    // for a Zotero change, a Citation and References Style change, or an engine that came or
-    // went — is the one signal that makes the formatted entries here stale.
+    // for a Zotero change, a Citation and References Style change, or an engine
+    // that came or went — keeps entries on screen while the reload runs. A
+    // changed Profile presentation clears entries from the previous style.
     this.register(
-      bibliographyRender.on("invalidated", () =>
-        this.#reload({ invalidate: true }),
-      ),
+      bibliographyRender.on("invalidated", () => {
+        const presentation = this.#readPresentation(this.#file);
+        const invalidate = !samePresentation(this.#presentation, presentation);
+        this.#presentation = presentation;
+        this.#reload({ invalidate });
+      }),
     );
+    const repaint = (key: string): void => {
+      if (key === this.#renderKey) this.#reload();
+    };
+    this.register(bibliographyRender.on("changed", repaint));
+    this.register(bibliographyRender.on("settled", repaint));
     this.#reload();
     this.#rescan();
-    await db.ready;
+    await Promise.all([db.ready, this.#deps.profile.ready]);
+    this.#rescan();
     this.#reload();
   }
 
@@ -252,6 +284,7 @@ export class ReferencesView extends ItemView {
    * all the same, and the copy it offers names the note now on screen.
    */
   #rescan(): void {
+    if (!this.#deps.profile.loaded) return;
     const scan = ++this.#scan;
     // A presentation change makes the entries on screen stale the moment it is
     // read, and the read that follows lands a turn later at the earliest, so
@@ -322,7 +355,7 @@ export class ReferencesView extends ItemView {
    */
   readonly #ambiguousCandidates: AmbiguousCandidatesOf = (citekey) => {
     const resolved = this.#deps.citationIndex.resolveCitekey(citekey);
-    return resolved.kind === "ambiguous"
+    return resolved?.kind === "ambiguous"
       ? describeCandidates(this.#deps, resolved.candidates)
       : null;
   };
@@ -331,29 +364,33 @@ export class ReferencesView extends ItemView {
   #readPresentation(file: TFile | null): DocumentPresentation {
     return file === null
       ? { kind: "read", presentation: {} }
-      : documentPresentation(this.#deps.app.metadataCache, file);
+      : documentPresentation(
+          this.#deps.app.metadataCache,
+          file,
+          this.#deps.profile,
+        );
   }
 
   /**
-   * Re-read the cited Items and re-render the whole list — no incremental
-   * diffing. `invalidate` drops the formatted entries too, for a change that
-   * makes them stale rather than incomplete.
+   * Re-read the cited Items and re-render the whole list. `invalidate` drops
+   * entries whose Citation Presentation no longer matches the active Profile.
    */
   #reload({ invalidate = false } = {}): void {
     if (invalidate) {
-      this.#rendered.clear();
+      this.#onScreen.clear();
       this.#entryMarkers = null;
       this.#formattingFailed = false;
       this.#documentPresentationError = null;
+      this.#renderKey = null;
     }
     this.#entrySerials = this.#readEntrySerials();
-    const generation = ++this.#generation;
+    this.#copyGeneration += 1;
     const citations = this.#citations;
     const { sources } = readReferenceSources(this.#deps.db, citations);
     const engine = this.#deps.pandocEngine.getStatus();
     const entries = buildReferenceEntries(citations, sources, {
       bibliography: {
-        entries: this.#rendered,
+        entries: this.#onScreen,
         complete: false,
       },
       errors: this.#errors,
@@ -370,9 +407,18 @@ export class ReferencesView extends ItemView {
       formattingFailed: this.#formattingFailed,
       documentPresentationError: this.#documentPresentationError,
       dbReady: this.#deps.db.state === "ready",
+      citekeyResolution: this.#deps.citationIndex.resolution,
       copy: this.#trackCopy(entries),
     });
-    void this.#render(generation, citations, sources);
+    void this.#render(citations, sources);
+  }
+
+  /** Republish the resolution state alone, for a settle the list survives. */
+  #publishResolution(): void {
+    const citekeyResolution = this.#deps.citationIndex.resolution;
+    if (this.#store.getState().citekeyResolution !== citekeyResolution) {
+      this.#store.setState({ citekeyResolution });
+    }
   }
 
   /**
@@ -388,7 +434,7 @@ export class ReferencesView extends ItemView {
    */
   #trackCopy(entries: readonly ReferenceEntry[]): ReferencesCopyState {
     const path = this.#path;
-    const generation = this.#generation;
+    const generation = this.#copyGeneration;
     const copy = referencesCopyState({
       path,
       generation,
@@ -469,10 +515,10 @@ export class ReferencesView extends ItemView {
    * the thing to repair, which also leaves the Copied Bibliography out of reach.
    */
   async #render(
-    generation: number,
     citations: readonly Citation[],
     sources: ReadonlyMap<string, ReferenceSource>,
   ): Promise<void> {
+    const file = this.#file;
     const declared = this.#presentation;
     // One value for this render: the style and Citation Locale the note is
     // shown under, and the works it cites in the order it cites them.
@@ -482,7 +528,8 @@ export class ReferencesView extends ItemView {
       { citations, works: sources },
     );
     if (presented.kind === "unusable") {
-      this.#documentPresentationError = presented.property;
+      this.#renderKey = null;
+      this.#documentPresentationError = presented;
       this.#showMinimal(citations, sources, false);
       return;
     }
@@ -491,40 +538,68 @@ export class ReferencesView extends ItemView {
       presented.items,
       presented.presentation,
     );
-    if (generation !== this.#generation) return;
+    if (
+      file !== this.#file ||
+      citations !== this.#citations ||
+      declared !== this.#presentation
+    ) {
+      return;
+    }
 
-    if (outcome.kind !== "rendered") {
+    if (outcome.kind === "unavailable") {
+      this.#renderKey = null;
       // A style the note itself named is the note's to repair; one it inherited
       // from the vault is the vault selection's, which its own warning names.
       this.#documentPresentationError =
-        outcome.kind === "unavailable" &&
         outcome.reason === "style-missing" &&
         declared.kind === "read" &&
-        declared.presentation.styleId !== undefined
-          ? "style"
+        typeof declared.presentation.styleId === "string"
+          ? declared.profileStyle
+            ? {
+                kind: "unusable",
+                property: "profile-style",
+                styleId: declared.presentation.styleId,
+                ...declared.profileStyle,
+              }
+            : { kind: "unusable", property: "style" }
           : null;
-      this.#showMinimal(citations, sources, outcome.kind === "failed");
+      this.#showMinimal(citations, sources, outcome.reason === "failed");
       return;
     }
+    this.#renderKey = outcome.key;
     this.#documentPresentationError = null;
+    this.#paint(outcome.record, citations, sources);
+  }
 
+  #paint(
+    record: Held<BibliographyRenderResult>,
+    citations: readonly Citation[],
+    sources: ReadonlyMap<string, ReferenceSource>,
+  ): void {
+    const { entries: rendered, hasEntryMarkers } = record.value;
     // Refilled rather than merged: the render covers every cited Item, so
     // what it leaves out is no longer cited, and the map's order is the
     // bibliography order the list reads in.
-    this.#rendered.clear();
-    for (const { id, marker, content } of outcome.entries) {
-      this.#rendered.set(id, { marker, content });
+    this.#onScreen.clear();
+    for (const { id, marker, content } of rendered) {
+      this.#onScreen.set(id, { marker, content });
     }
-    this.#entryMarkers = outcome.hasEntryMarkers;
-    this.#formattingFailed = false;
-    this.#formatting = "complete";
+    this.#entryMarkers = hasEntryMarkers;
+    this.#formattingFailed = record.status === "failed";
+    this.#formatting =
+      record.status === "revalidating"
+        ? "pending"
+        : record.status === "failed"
+          ? "failed"
+          : "complete";
     logger.debug("References bibliography rendered", {
-      count: outcome.entries.length,
-      hasEntryMarkers: outcome.hasEntryMarkers,
+      count: rendered.length,
+      hasEntryMarkers,
+      status: record.status,
     });
     const entries = buildReferenceEntries(citations, sources, {
       bibliography: {
-        entries: this.#rendered,
+        entries: this.#onScreen,
         complete: true,
       },
       errors: this.#errors,
@@ -533,7 +608,7 @@ export class ReferencesView extends ItemView {
     this.#store.setState({
       entries,
       listMode: this.#listMode(),
-      formattingFailed: false,
+      formattingFailed: this.#formattingFailed,
       documentPresentationError: null,
       copy: this.#trackCopy(entries),
     });
@@ -569,9 +644,7 @@ export class ReferencesView extends ItemView {
     const file = this.#file;
     if (file === null) return false;
     const held = this.#deps.citationText.peek(file.path);
-    if (held !== null) return held.entrySerials;
-    void this.#deps.citationText.load(file);
-    return false;
+    return held?.value.entrySerials ?? false;
   }
 
   /** Replace stale formatted entries with the current minimal reference list. */
@@ -580,7 +653,7 @@ export class ReferencesView extends ItemView {
     sources: ReadonlyMap<string, ReferenceSource>,
     formattingFailed: boolean,
   ): void {
-    this.#rendered.clear();
+    this.#onScreen.clear();
     this.#entryMarkers = null;
     this.#formattingFailed = formattingFailed;
     this.#formatting = formattingFailed ? "failed" : "unavailable";

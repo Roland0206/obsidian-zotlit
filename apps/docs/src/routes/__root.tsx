@@ -6,6 +6,7 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { HomeLayout } from "fumadocs-ui/layouts/home";
 import { RootProvider } from "fumadocs-ui/provider/tanstack";
 
+import { DocsImage } from "@/components/docs-image";
 import { LegacyBanner } from "@/components/legacy-banner";
 import { Header } from "@/layouts/home/slots/header";
 import { baseOptions } from "@/lib/layout.shared";
@@ -52,11 +53,10 @@ export const Route = createRootRoute({
       { rel: "icon", href: "/favicon.ico", sizes: "32x32" },
       { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
       // Serif display paints on essentially every route, so both its latin
-      // faces are fetched eagerly — upright for headlines, italic for the lede
-      // and standfirst lines that ride beside them. Inter and IBM Plex Mono
-      // stay unpreloaded: both swap in from a system fallback of the same
-      // class. The Archivo wordmark needs no entry — it is small enough that
-      // Vite inlines it into the stylesheet.
+      // faces are eager — upright for headlines, italic for the lede and
+      // standfirst lines that ride beside them. Inter and IBM Plex Mono use
+      // metric-adjusted local fallbacks instead. The Archivo wordmark needs no
+      // entry — Vite inlines its small subset into the stylesheet.
       // @see apps/docs/DESIGN.md → Font loading
       ...[gelasioLatin, gelasioLatinItalic].map((href) => ({
         rel: "preload",
@@ -79,7 +79,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body className="flex min-h-screen flex-col">
         {/* The search dialog fetches `/api/search`, the fumadocs default. */}
-        <RootProvider>
+        <RootProvider components={{ Image: DocsImage }}>
           <LegacyBanner />
           {children}
         </RootProvider>

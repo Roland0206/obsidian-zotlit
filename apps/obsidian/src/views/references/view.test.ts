@@ -4,14 +4,26 @@ import type { App, EventRef, WorkspaceLeaf } from "obsidian";
 import { act } from "preact/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DocumentCitationSet } from "@/services/citation-index/service";
+import { FIELD_CITATION_STYLE } from "@/lib/constants";
+import type { Held } from "@/lib/held-reads";
+import * as m from "@/lib/i18n/generated/messages";
+import type {
+  CitationKeyResolution,
+  DocumentCitationSet,
+} from "@/services/citation-index/service";
 import type { DocumentCitations } from "@/services/citation-text/present";
 import type { Inline, Inlines } from "@/services/pandoc/ast";
 import type { BibliographyRenderOutcome } from "@/services/pandoc/render-cache";
+import type { BibliographyRenderResult } from "@/services/pandoc/render-cache";
+import { profileReader } from "@/services/profile/__fixtures__/reader";
+import { defaults } from "@/services/settings/schema";
 
 import { ReferencesView } from "./view";
 
-type RenderedBibliography = BibliographyRenderOutcome;
+type RenderedBibliography = Extract<
+  BibliographyRenderOutcome,
+  { kind: "held" }
+>;
 
 vi.mock("zustand", () => import("../__fixtures__/zustand"));
 
@@ -86,8 +98,7 @@ function words(text: string): Inlines {
 }
 
 function renderedOutcome(): RenderedBibliography {
-  return {
-    kind: "rendered",
+  const value: BibliographyRenderResult = {
     entries: [
       {
         id: "ref-book",
@@ -97,12 +108,28 @@ function renderedOutcome(): RenderedBibliography {
     ],
     hasEntryMarkers: true,
   };
+  return {
+    kind: "held",
+    key: "test-render",
+    record: {
+      value,
+      status: "fresh",
+      settled: Promise.resolve(value),
+    },
+  };
+}
+
+function failedHeldOutcome(): RenderedBibliography {
+  const outcome = renderedOutcome();
+  return {
+    ...outcome,
+    record: { ...outcome.record, status: "failed" },
+  };
 }
 
 /** What a style that writes no Entry Marker renders, which leaves the gutter free. */
 function unmarkedOutcome(): RenderedBibliography {
-  return {
-    kind: "rendered",
+  const value: BibliographyRenderResult = {
     entries: [
       {
         id: "ref-book",
@@ -111,6 +138,15 @@ function unmarkedOutcome(): RenderedBibliography {
       },
     ],
     hasEntryMarkers: false,
+  };
+  return {
+    kind: "held",
+    key: "test-render-unmarked",
+    record: {
+      value,
+      status: "fresh",
+      settled: Promise.resolve(value),
+    },
   };
 }
 
@@ -131,10 +167,15 @@ let activeFile: TFile;
 let otherFile: TFile;
 let onDbChanged: (() => void) | undefined;
 let onCitationsChanged: ((path: string) => void) | undefined;
+let onCitedByInvalidated: (() => void) | undefined;
+/** What the Citation Index reports its resolution snapshot as. */
+let citekeyResolution: CitationKeyResolution;
 /** What the citation text service holds for the note on screen. */
 let heldCitations: DocumentCitations | null;
 let onInvalidated: (() => void) | undefined;
 let onActiveLeafChange: (() => void) | undefined;
+let onMetadataChanged: (() => void) | undefined;
+let frontmatter: Record<string, unknown> | undefined;
 
 function markdownFile(basename: string): TFile {
   const file = new TFile();
@@ -167,8 +208,10 @@ async function finishRender(
 }
 
 /** Answer the citation-set read the newest rescan is waiting on. */
-async function finishScan(): Promise<void> {
-  scans.at(-1)!.resolve(citationSet);
+async function finishScan(
+  set: DocumentCitationSet = citationSet,
+): Promise<void> {
+  scans.at(-1)!.resolve(set);
   await settle();
 }
 
@@ -182,6 +225,8 @@ beforeEach(async () => {
   renders = [];
   scans = [];
   heldCitations = null;
+  frontmatter = undefined;
+  citekeyResolution = "fresh";
   activeFile = markdownFile("tidal");
   otherFile = markdownFile("estuary");
   const app = {
@@ -193,13 +238,22 @@ beforeEach(async () => {
       },
     },
     metadataCache: {
-      on: () => ({}) as EventRef,
+      on: (event: string, callback: () => void) => {
+        if (event === "changed") onMetadataChanged = callback;
+        return {} as EventRef;
+      },
       // No note here declares a style of its own, so every list is rendered
       // under the vault Citation Presentation.
-      getFileCache: () => null,
+      getFileCache: () => (frontmatter ? { frontmatter } : null),
     },
   } as unknown as App;
 
+  const profileReady = Promise.withResolvers<void>();
+  const profile = {
+    ...profileReader(defaults, app.metadataCache),
+    loaded: false,
+    ready: profileReady.promise,
+  };
   view = new TestReferencesView(
     {} as WorkspaceLeaf,
     {
@@ -219,11 +273,24 @@ beforeEach(async () => {
           scans.push(deferred);
           return deferred.promise;
         },
-        on: () => () => undefined,
+        resolveCitekey: () => ({ kind: "missing" }),
+        get resolution() {
+          return citekeyResolution;
+        },
+        on: (event: string, callback: () => void) => {
+          if (event === "cited-by-invalidated") onCitedByInvalidated = callback;
+          return () => undefined;
+        },
       },
       citationText: {
-        peek: () => heldCitations,
-        load: () => Promise.resolve(heldCitations),
+        peek: (): Held<DocumentCitations> | null =>
+          heldCitations === null
+            ? null
+            : {
+                value: heldCitations,
+                status: "fresh",
+                settled: Promise.resolve(heldCitations),
+              },
         on: (event: string, callback: (path: string) => void) => {
           if (event === "changed") onCitationsChanged = callback;
           return () => undefined;
@@ -247,13 +314,21 @@ beforeEach(async () => {
           return () => undefined;
         },
       },
+      profile,
       openSettings: () => undefined,
       openStyleSettings: () => undefined,
     } as unknown as ConstructorParameters<typeof TestReferencesView>[1],
   );
 
   document.body.append(view.contentEl);
-  await act(() => view!.open());
+  await act(async () => {
+    const opening = view!.open();
+    await Promise.resolve();
+    expect(scans).toHaveLength(0);
+    profile.loaded = true;
+    profileReady.resolve();
+    await opening;
+  });
   await finishScan();
 });
 
@@ -262,8 +337,10 @@ afterEach(async () => {
   view = undefined;
   onDbChanged = undefined;
   onCitationsChanged = undefined;
+  onCitedByInvalidated = undefined;
   onInvalidated = undefined;
   onActiveLeafChange = undefined;
+  onMetadataChanged = undefined;
   document.body.replaceChildren();
 });
 
@@ -293,10 +370,40 @@ describe("ReferencesView copy readiness", () => {
     expect(copyAction().hasAttribute("disabled")).toBe(false);
   });
 
-  it("takes copy back when the held renders go stale", async () => {
+  it("takes copy back but keeps the entries when the held renders go stale", async () => {
     await finishRender();
 
     await act(() => onInvalidated?.());
+
+    // Stale entries stay on screen while the fresh render replaces them, so
+    // a Zotero refresh that changes nothing never flashes the minimal list.
+    expect(view!.contentEl.textContent).toContain("Rivers, A. (2020).");
+    expect(copyAction().hasAttribute("disabled")).toBe(true);
+
+    await finishRender();
+
+    expect(copyAction().hasAttribute("disabled")).toBe(false);
+  });
+
+  it("keeps held entries visible when their replacement fails", async () => {
+    await finishRender();
+
+    await act(() => onDbChanged?.());
+    await finishRender(failedHeldOutcome());
+
+    expect(view!.contentEl.textContent).toContain("Rivers, A. (2020).");
+    expect(view!.contentEl.textContent).toContain(
+      m.references_format_failed_title(),
+    );
+    expect(copyAction().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("clears entries when the document selects another style", async () => {
+    await finishRender();
+    frontmatter = { [FIELD_CITATION_STYLE]: "new-style" };
+
+    await act(() => onMetadataChanged?.());
+    await finishScan();
 
     expect(view!.contentEl.textContent).not.toContain("Rivers, A. (2020).");
     expect(copyAction().hasAttribute("disabled")).toBe(true);
@@ -360,6 +467,55 @@ describe("ReferencesView Entry Serials", () => {
 
     expect(view!.contentEl.querySelector("ul")!.classList).toContain(
       "zt:grid-cols-[minmax(0,1fr)_max-content]",
+    );
+  });
+});
+
+describe("ReferencesView citekey resolution", () => {
+  /** One citation whose key the resolution snapshot answers nothing for. */
+  const unresolvedSet: DocumentCitationSet = {
+    occurrences: [],
+    citations: [
+      {
+        indexedKey: null,
+        linkpath: null,
+        refNumber: 1,
+        occurrences: [
+          {
+            kind: "citekey",
+            raw: "ghost2024",
+            position: {
+              start: { line: 0, col: 0, offset: 0 },
+              end: { line: 0, col: 10, offset: 10 },
+            },
+          },
+        ],
+      },
+    ],
+    errors: [],
+  };
+
+  it("returns the pending label to a verdict when a rebuild settles unchanged", async () => {
+    await act(() => onActiveLeafChange!());
+    await finishScan(unresolvedSet);
+
+    // No snapshot has settled before this reload reads it.
+    citekeyResolution = null;
+    await act(() => onDbChanged?.());
+    expect(view!.contentEl.textContent).toContain(
+      m.references_citekey_pending({ citekey: "ghost2024" }),
+    );
+
+    // The rebuild settles with the maps unchanged, so no resolution-changed
+    // event follows — only the state flip the settle announces.
+    citekeyResolution = "fresh";
+    await act(() => onCitedByInvalidated!());
+
+    expect(view!.contentEl.textContent).toContain(
+      m.references_citekey_unresolved({ citekey: "ghost2024" }),
+    );
+    expect(view!.contentEl.textContent).not.toContain(
+      m.references_citekey_pending({ citekey: "ghost2024" }),
     );
   });
 });

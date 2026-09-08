@@ -11,6 +11,7 @@ import {
 import type {
   Annotation,
   AnnotationResolvers,
+  AnnotationTemplateContext,
   Attachment,
   FallibleTemplateLink,
   GroupIDMemo,
@@ -18,24 +19,18 @@ import type {
   TemplateParentItemData,
 } from "@zotlit/db";
 import type { NodeDatabaseClient } from "@zotlit/db/client/node";
-import {
-  attachmentAbsPath,
-  parseAttachmentPath,
-  resolveAnnotCachePath,
-} from "@zotlit/db/path";
+import { attachmentAbsPath, resolveAnnotCachePath } from "@zotlit/db/path";
 import type { AttachmentPathContext } from "@zotlit/db/path";
+import { inlineCitation } from "@zotlit/templates";
 
-import { inlineCitation } from "@/lib/inline-citation";
 import { creatorSummary } from "@/lib/item-summary";
 import { fileUrlLink } from "@/lib/markdown-link";
 import {
   commentToMarkdown,
   createCommentTurndown,
 } from "@/lib/turndown/comment";
-import type {
-  AttachmentImport,
-  SourceOrigin,
-} from "@/services/attachment-import/service";
+import { attachmentSourceOrigin } from "@/services/attachment-import/service";
+import type { AttachmentImport } from "@/services/attachment-import/service";
 import type { TemplateService } from "@/services/template/service";
 import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 
@@ -72,25 +67,6 @@ export function attachmentFileLink(
     filename,
     options?.page != null ? `#page=${options.page}` : "",
   );
-}
-
-function attachmentSourceOrigin(attachment: Attachment): SourceOrigin | null {
-  const parsed = parseAttachmentPath(
-    attachment.path,
-    attachment.linkMode,
-    attachment.key,
-  );
-  switch (parsed.kind) {
-    case "storage":
-      return "storage";
-    case "linked-base":
-      return "linked-base";
-    case "linked-absolute":
-      return "linked-absolute";
-    case "linked-url":
-    case "unknown":
-      return null;
-  }
 }
 
 /**
@@ -153,6 +129,7 @@ export function renderAnnotations(
     attachmentImport: Pick<AttachmentImport, "decide" | "resolveLink">;
     groupIdMemo?: GroupIDMemo;
     tagMemo?: TagMemo;
+    renderAnnotation?: (data: AnnotationTemplateContext) => string;
   },
 ): Map<string, string> {
   const resolvers = buildAnnotationResolvers({
@@ -169,7 +146,11 @@ export function renderAnnotations(
     const root = withAnnotationCitation(data, () =>
       annotationCitation(data.parentItem, data.pageLabel, options.template),
     );
-    result.set(key, options.template.render("annotation", root));
+    result.set(
+      key,
+      options.renderAnnotation?.(root) ??
+        options.template.render("annotation", root),
+    );
   }
   return result;
 }

@@ -18,6 +18,7 @@ import type { AnnotViewItem, Item, ItemRef, Library } from "@zotlit/db";
 import * as m from "@/lib/i18n/generated/messages";
 import { itemSummary } from "@/lib/item-summary";
 import { getLogger } from "@/lib/log";
+import { BaseNotice } from "@/lib/notice";
 import type {
   AttachmentImport,
   AttachmentImportService,
@@ -88,6 +89,10 @@ export class AnnotationView extends ItemView {
   #loadDisposables: DisposableStack | null = null;
   #itemKey: string | null = null;
   #importHandle: AttachmentImport | null = null;
+  /** Note path the standing (or in-flight) import handle was prepared for. */
+  #importHandlePath: string | null = null;
+  /** Monotonic prepare token, so a slow prepare cannot overwrite a newer one. */
+  #importHandleGen = 0;
 
   /** Follow mode lives in the store (single source of truth); read it here. */
   get #followMode(): FollowMode {
@@ -163,8 +168,9 @@ export class AnnotationView extends ItemView {
       onLinkItem: () => this.#linkItem(),
       onUnlinkItem: () => this.#setFollowMode("note"),
       onDragStart: createDragInsertHandler({
-        workspace: this.#deps.app.workspace,
+        app: this.#deps.app,
         noteFeature: this.#deps.noteFeature,
+        notify: (message) => void new BaseNotice(message),
         getImportHandle: () => this.#importHandle,
         onSettled: () => this.#syncImportHandle(),
       }),
@@ -592,7 +598,7 @@ export class AnnotationView extends ItemView {
     });
     this.#groupID = null;
     this.#itemKey = null;
-    this.#importHandle = null;
+    this.#dropImportHandle();
   }
 
   /**
@@ -604,23 +610,56 @@ export class AnnotationView extends ItemView {
     if (this.#itemKey === null) return;
     const activeFile = this.#deps.app.workspace.getActiveFile();
     if (activeFile) this.#prepareImportHandle(activeFile.path);
-    else this.#importHandle = null;
+    else this.#dropImportHandle();
+  }
+
+  #dropImportHandle(): void {
+    this.#importHandleGen++;
+    this.#importHandle = null;
+    this.#importHandlePath = null;
+    this.#syncDragTarget();
+  }
+
+  /** Mirror the handle's state into the store so cards can disable the drag. */
+  #syncDragTarget(): void {
+    this.#store.setState({
+      dragTarget: this.#importHandle
+        ? "ready"
+        : this.#importHandlePath
+          ? "preparing"
+          : "none",
+    });
   }
 
   /**
    * Prepare a fresh attachment-import handle for the active note so drag-insert
-   * can resolve image embeds synchronously and `flush()` them on drop. Discards
-   * any prior handle (and its un-dropped pending imports).
+   * can resolve image embeds synchronously and `flush()` them on drop.
+   *
+   * `prepare()` is async (settings, folder probe, root canonicalization), and
+   * this runs after every drag, drop-induced note change, and leaf activation
+   * — including the click that starts a drag. A handle already prepared for
+   * this same note keeps serving `dragstart` until the fresh one lands, so a
+   * drag inside that window renders through the template instead of taking
+   * the plain-text fallback. A handle for another note is dropped at once: it
+   * would resolve links and copy excerpts relative to the wrong note.
    */
   #prepareImportHandle(notePath: string): void {
-    this.#importHandle = null;
+    const gen = ++this.#importHandleGen;
+    if (this.#importHandlePath !== notePath) {
+      this.#importHandle = null;
+      this.#importHandlePath = notePath;
+      this.#syncDragTarget();
+    }
     void this.#deps.attachmentImport
       .prepare(notePath)
       .then((handle) => {
-        // Ignore if the active note changed while preparing.
-        if (this.#deps.app.workspace.getActiveFile()?.path === notePath) {
-          this.#importHandle = handle;
+        // A newer prepare (or a drop of the handle) superseded this one.
+        if (gen !== this.#importHandleGen) {
+          logger.debug("Skipped stale attachment import handle", { notePath });
+          return;
         }
+        this.#importHandle = handle;
+        this.#syncDragTarget();
       })
       .catch((error) => {
         logger.warn("Failed to prepare attachment import for drag-insert", {

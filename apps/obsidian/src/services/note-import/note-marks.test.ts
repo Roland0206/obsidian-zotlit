@@ -21,7 +21,7 @@ function load(html: string): HTMLElement {
   return root;
 }
 
-const packageRoot = getPackageRoot();
+const packageRoot = getPackageRoot(import.meta.filename);
 
 const LOCAL_USER = "http://zotero.org/users/local/BOtEiq6p/items";
 
@@ -92,10 +92,11 @@ describe("parseNoteSchema", () => {
     expect(parseNoteSchema(root)).toEqual({ supported: false, version: 5 });
   });
 
-  it("rejects a note with no schema container", () => {
+  it("reports a missing schema marker", () => {
     expect(parseNoteSchema(load("<p>plain note</p>"))).toEqual({
       supported: false,
       version: null,
+      fallbackReason: "missing-schema-marker",
     });
   });
 });

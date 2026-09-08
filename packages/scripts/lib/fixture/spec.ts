@@ -80,6 +80,8 @@ export interface FixtureCollection {
    */
   key: string;
   name: string;
+  /** Parent in the same Library; absent for a top-level collection. */
+  parentCollectionID?: number;
 }
 
 /**
@@ -90,13 +92,39 @@ export interface FixtureCollection {
  */
 export const BUILD_TIMESTAMP = "2026-08-19 08:00:00";
 
-/** `SHAREDCL` repeats in three Libraries, so a collection target must name one. */
+/**
+ * `SHAREDCL` repeats in three Libraries, so a collection target must name one.
+ * `PERSCHLD` nests under `PERSNAL2`, so a descendant walk and a direct
+ * membership check give different answers for the one Item filed there.
+ */
 export const COLLECTIONS: readonly FixtureCollection[] = [
   { collectionID: 1, libraryID: 1, key: "SHAREDCL", name: "Shared key" },
   { collectionID: 2, libraryID: 2, key: "SHAREDCL", name: "Shared key" },
   { collectionID: 3, libraryID: 3, key: "SHAREDCL", name: "Shared key" },
   { collectionID: 4, libraryID: 1, key: "PERSNAL2", name: "Personal only" },
+  {
+    collectionID: 5,
+    libraryID: 1,
+    key: "PERSCHLD",
+    name: "Personal child",
+    parentCollectionID: 4,
+  },
 ];
+
+/**
+ * The Zotero Item types the Spec builds. Venue coverage drives the set: a
+ * native container field, an aliased one, an aliased publisher-role field, a
+ * native publisher field, and a type with neither role.
+ */
+export const FIXTURE_ITEM_TYPES = [
+  "journalArticle",
+  "bookSection",
+  "conferencePaper",
+  "preprint",
+  "book",
+  "thesis",
+  "letter",
+] as const;
 
 export interface FixtureItem {
   itemID: number;
@@ -106,14 +134,28 @@ export interface FixtureItem {
    * object-key format, so `isItemKey` accepts it.
    */
   key: string;
-  itemType: "journalArticle" | "bookSection";
+  itemType: (typeof FIXTURE_ITEM_TYPES)[number];
   /** `null` leaves the item without a native Zotero Citation Key. */
   citationKey: string | null;
   /** Fixture Vault filename stem when a prose page needs a stable target. */
   literatureNoteName?: string;
+  /**
+   * Literature Note Profile the seeded note belongs to, written as a Profile
+   * stamp. An absent value seeds the note under the default Profile, unstamped.
+   */
+  literatureNoteProfile?: string;
   title: string;
-  /** Container title, stored under the type-specific field of {@link itemType}. */
-  containerTitle: string;
+  /**
+   * The Item's **Venue**. The builder resolves which per-type field receives
+   * it — the container-role field where {@link itemType} has one, its
+   * publisher-role field otherwise. Omit it for a type that records neither.
+   */
+  venue?: string;
+  /**
+   * A publisher-role value on a type that also records a container role, so
+   * the container-first Venue chain has something to win against.
+   */
+  publisher?: string;
   /** Publication year, as Zotero stores the raw `date` string. */
   date: string;
   creators: readonly FixtureCreator[];
@@ -133,6 +175,9 @@ export interface FixtureCreator {
   fieldMode: 0 | 1;
 }
 
+/** Id of the Fixture's second Literature Note Profile, {@link LITERATURE_NOTE_PROFILES}. */
+const BOOKS_PROFILE_ID = "V1StGXR8Z5jd";
+
 /**
  * The item set every discovery, Citation Key, and batch tracer reads.
  *
@@ -148,7 +193,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "personalAlpha2024",
     title: "Alpha of the personal library",
-    containerTitle: "Journal of Personal Records",
+    venue: "Journal of Personal Records",
     date: "2024",
     creators: [
       {
@@ -184,8 +229,10 @@ export const ITEMS: readonly FixtureItem[] = [
     key: "BBBB2222",
     itemType: "journalArticle",
     citationKey: "duplicateWithin2020",
+    literatureNoteName: "books-duplicateWithin2020",
+    literatureNoteProfile: BOOKS_PROFILE_ID,
     title: "Within-library duplicate, first item",
-    containerTitle: "Journal of Personal Records",
+    venue: "Journal of Personal Records",
     date: "2020",
     creators: [author("Bo", "Duplicate")],
     dateModified: "2025-03-09 12:00:00",
@@ -198,7 +245,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "duplicateWithin2020",
     title: "Within-library duplicate, second item",
-    containerTitle: "Journal of Personal Records",
+    venue: "Journal of Personal Records",
     date: "2020",
     creators: [author("Cai", "Duplicate")],
     dateModified: "2025-03-08 12:00:00",
@@ -211,7 +258,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "duplicateAcross2019",
     title: "Cross-library duplicate, personal side",
-    containerTitle: "Journal of Personal Records",
+    venue: "Journal of Personal Records",
     date: "2019",
     creators: [author("Dee", "Across")],
     dateModified: "2025-03-07 12:00:00",
@@ -224,7 +271,8 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "bookSection",
     citationKey: null,
     title: "Personal item without a citation key",
-    containerTitle: "Collected Personal Essays",
+    venue: "Collected Personal Essays",
+    publisher: "Essay House",
     date: "2018",
     creators: [author("Eli", "Unkeyed")],
     relatedKeys: ["AAAAAAAA"],
@@ -238,7 +286,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "sharedReadingAlpha2023",
     title: "Alpha of the shared reading group",
-    containerTitle: "Journal of Shared Reading",
+    venue: "Journal of Shared Reading",
     date: "2023",
     creators: [author("Fay", "Shared")],
     dateModified: "2025-03-05 12:00:00",
@@ -251,7 +299,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "sharedReadingBeta2022",
     title: "Beta of the shared reading group",
-    containerTitle: "Journal of Shared Reading",
+    venue: "Journal of Shared Reading",
     date: "2022",
     creators: [author("Gil", "Shared")],
     dateModified: "2025-03-04 12:00:00",
@@ -264,7 +312,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "duplicateAcross2019",
     title: "Cross-library duplicate, lab side",
-    containerTitle: "Lab Archive Proceedings",
+    venue: "Lab Archive Proceedings",
     date: "2019",
     creators: [author("Hal", "Across")],
     dateModified: "2025-03-03 12:00:00",
@@ -277,7 +325,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "labArchiveAlpha2021",
     title: "Alpha of the lab archive",
-    containerTitle: "Lab Archive Proceedings",
+    venue: "Lab Archive Proceedings",
     date: "2021",
     creators: [author("Ivy", "Archive")],
     dateModified: "2025-03-04 12:00:00",
@@ -290,7 +338,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "consortiumAlpha2020",
     title: "Alpha of the read-only consortium",
-    containerTitle: "Consortium Reading Room Notes",
+    venue: "Consortium Reading Room Notes",
     date: "2020",
     creators: [author("Jo", "Consortium")],
     dateModified: "2025-03-02 12:00:00",
@@ -303,11 +351,11 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "personalTieFirst2017",
     title: "Personal tie, lower item id",
-    containerTitle: "Journal of Personal Records",
+    venue: "Journal of Personal Records",
     date: "2017",
     creators: [author("Kim", "Tie")],
     dateModified: "2025-03-01 12:00:00",
-    collectionIDs: [],
+    collectionIDs: [5],
   },
   {
     itemID: 12,
@@ -316,7 +364,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "personalTieSecond2017",
     title: "Personal tie, higher item id",
-    containerTitle: "Journal of Personal Records",
+    venue: "Journal of Personal Records",
     date: "2017",
     creators: [author("Lin", "Tie")],
     dateModified: "2025-03-01 12:00:00",
@@ -329,7 +377,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "bookSection",
     citationKey: "nafulaSakimasSong",
     title: "Sakima’s song",
-    containerTitle: "African Storybook",
+    venue: "African Storybook",
     date: "2015",
     creators: [author("Ursula", "Nafula")],
     dateModified: "2025-02-21 12:00:00",
@@ -342,7 +390,7 @@ export const ITEMS: readonly FixtureItem[] = [
     itemType: "journalArticle",
     citationKey: "ioannidisWhyMost2005",
     title: "Why Most Published Research Findings Are False",
-    containerTitle: "PLoS Medicine",
+    venue: "PLoS Medicine",
     date: "2005",
     creators: [author("John P. A.", "Ioannidis")],
     dateModified: "2025-02-13 12:00:00",
@@ -357,7 +405,7 @@ export const ITEMS: readonly FixtureItem[] = [
     literatureNoteName: "Hensher2011",
     title:
       "Interrogation of Responses to Stated Choice Experiments: Is there sense in what respondents tell us?",
-    containerTitle: "Journal of Choice Modelling",
+    venue: "Journal of Choice Modelling",
     date: "2011",
     creators: [author("David A.", "Hensher")],
     dateModified: "2025-02-11 12:00:00",
@@ -372,7 +420,7 @@ export const ITEMS: readonly FixtureItem[] = [
     literatureNoteName: "wallgren-petterssonDistalMyopathyCaused2007",
     title:
       "Distal myopathy caused by homozygous missense mutations in the nebulin gene",
-    containerTitle: "Brain",
+    venue: "Brain",
     date: "2007",
     creators: [author("Carina", "Wallgren-Pettersson")],
     dateModified: "2025-02-10 12:00:00",
@@ -387,7 +435,7 @@ export const ITEMS: readonly FixtureItem[] = [
     literatureNoteName: "wangMutationalClinicalSpectrum2020a",
     title:
       "Mutational and clinical spectrum in a cohort of Chinese patients with hereditary nemaline myopathy",
-    containerTitle: "Clinical Genetics",
+    venue: "Clinical Genetics",
     date: "2020",
     creators: [author("Zheng", "Wang")],
     dateModified: "2025-02-09 12:00:00",
@@ -402,7 +450,7 @@ export const ITEMS: readonly FixtureItem[] = [
     literatureNoteName: "wittNebulinRegulatesThin2006",
     title:
       "Nebulin regulates thin filament length, contractility, and Z-disk structure in vivo",
-    containerTitle: "The EMBO Journal",
+    venue: "The EMBO Journal",
     date: "2006",
     creators: [author("Christopher C.", "Witt")],
     dateModified: "2025-02-08 12:00:00",
@@ -416,7 +464,7 @@ export const ITEMS: readonly FixtureItem[] = [
     citationKey: null,
     literatureNoteName: "xuNoCitationKeyProperty2019",
     title: "A Literature Note whose Zotero item carries no native citation key",
-    containerTitle: "Fixture Journal",
+    venue: "Fixture Journal",
     date: "2019",
     creators: [author("Xiu", "Xu")],
     dateModified: "2025-02-07 12:00:00",
@@ -431,7 +479,7 @@ export const ITEMS: readonly FixtureItem[] = [
     literatureNoteName: "yinClinicopathologicalFeaturesMutational2021",
     title:
       "Clinico-pathological features and mutational spectrum of 16 nemaline myopathy patients from a Chinese neuromuscular center",
-    containerTitle: "Neuromuscular Disorders",
+    venue: "Neuromuscular Disorders",
     date: "2021",
     creators: [author("Huan", "Yin")],
     dateModified: "2025-02-06 12:00:00",
@@ -445,7 +493,7 @@ export const ITEMS: readonly FixtureItem[] = [
     citationKey: "rougierTenSimpleRules2014",
     literatureNoteName: "rougierTenSimpleRules2014",
     title: "Ten Simple Rules for Better Figures",
-    containerTitle: "PLOS Computational Biology",
+    venue: "PLOS Computational Biology",
     date: "2014",
     creators: [
       author("Nicolas P.", "Rougier"),
@@ -454,6 +502,84 @@ export const ITEMS: readonly FixtureItem[] = [
     ],
     dateModified: "2025-02-05 12:00:00",
     collectionIDs: [1],
+  },
+  {
+    itemID: 57,
+    libraryID: 1,
+    key: "PREPRNT2",
+    itemType: "preprint",
+    citationKey: "yePreprintRepository2022",
+    title: "A preprint whose Venue is its repository",
+    venue: "arXiv",
+    date: "2022",
+    creators: [author("Lin", "Ye")],
+    dateModified: "2025-02-04 12:00:00",
+    collectionIDs: [1],
+  },
+  {
+    itemID: 58,
+    libraryID: 1,
+    key: "BKPUBLR4",
+    itemType: "book",
+    citationKey: "weiBookPublisher2017",
+    title: "A book whose Venue is its publisher",
+    venue: "Fixture University Press",
+    date: "2017",
+    creators: [author("Xin", "Wei")],
+    dateModified: "2025-02-03 12:00:00",
+    collectionIDs: [1],
+  },
+  {
+    itemID: 59,
+    libraryID: 1,
+    key: "LETTERS5",
+    itemType: "letter",
+    citationKey: "chenLetterNoVenue2015",
+    title: "A letter that records no Venue at all",
+    date: "2015",
+    creators: [author("Mei", "Chen")],
+    dateModified: "2025-02-02 12:00:00",
+    collectionIDs: [1],
+  },
+  {
+    itemID: 60,
+    libraryID: 1,
+    key: "CNPF226A",
+    itemType: "conferencePaper",
+    citationKey: "riveraResearchInterfaces2026",
+    title: "Designing reproducible research interfaces",
+    venue: "Proceedings of the Open Research Conference",
+    date: "2026",
+    creators: [author("Mara", "Rivera"), author("Tao", "Chen")],
+    dateModified: "2025-01-03 12:00:00",
+    collectionIDs: [1],
+  },
+  {
+    itemID: 61,
+    libraryID: 1,
+    key: "NW2CPDTC",
+    itemType: "book",
+    citationKey: "Kahneman2011",
+    title: "Thinking, fast and slow",
+    venue: "Penguin Books",
+    date: "2011-00-00 2011",
+    creators: [author("D", "Kahneman")],
+    dateModified: "2025-05-22 03:30:30",
+    collectionIDs: [],
+  },
+  {
+    itemID: 62,
+    libraryID: 1,
+    key: "I49R3FTL",
+    itemType: "thesis",
+    citationKey: "Batista2010",
+    title:
+      "Bicycle Sharing in Developing Countries: A proposal towards sustainable transportation in Brazilian media cities",
+    venue: "",
+    date: "2010-00-00 2010",
+    creators: [author("Edgard Antunes Dias", "Batista")],
+    dateModified: "2025-05-22 03:30:30",
+    collectionIDs: [],
   },
 ];
 
@@ -730,6 +856,19 @@ export const ATTACHMENTS: readonly FixtureAttachment[] = [
     sourceAsset: "rougier-2014/rougier-2014.pdf",
     dateModified: "2025-02-04 12:00:00",
   },
+  {
+    itemID: 63,
+    libraryID: 1,
+    key: "CNPDF26A",
+    parentItemID: 60,
+    linkMode: "imported_file",
+    contentType: "application/pdf",
+    title: "Research interfaces conference paper",
+    path: "research-interfaces.pdf",
+    url: null,
+    sourceAsset: "rougier-2014/rougier-2014.pdf",
+    dateModified: "2025-01-03 11:00:00",
+  },
 ];
 
 interface FixtureAnnotationBase {
@@ -790,7 +929,7 @@ export type FixtureAnnotation = FixtureAnnotationBase &
       }
   );
 
-/** Real anchors captured from pages in the committed PDFs. */
+/** Reviewed anchors for the committed Fixture documents. */
 export const ANNOTATIONS: readonly FixtureAnnotation[] = [
   {
     itemID: 26,
@@ -998,6 +1137,22 @@ export const ANNOTATIONS: readonly FixtureAnnotation[] = [
     dateAdded: "2026-08-23 16:20:12",
     dateModified: "2026-08-23 16:20:18",
   },
+  {
+    itemID: 64,
+    libraryID: 1,
+    key: "CNPAN26A",
+    parentItemID: 63,
+    type: 1,
+    text: "A reproducible interface makes its inputs and outputs inspectable.",
+    comment: "Reviewed Fixture text; it contains no personal library data.",
+    color: "#ffd400",
+    pageLabel: "1",
+    sortIndex: "00000|000001|00000",
+    position: { pageIndex: 0, rects: [[58, 590, 375, 610]] },
+    cacheImageAsset: null,
+    dateAdded: "2025-01-03 11:30:00",
+    dateModified: "2025-01-03 11:30:00",
+  },
 ];
 
 /** One CSL style a user installed in Zotero, as the Fixture carries it. */
@@ -1026,6 +1181,67 @@ export const INSTALLED_STYLES: readonly FixtureStyle[] = [
     title: "China National Standard GB/T 7714-1987 (numeric, 中文)",
   },
 ];
+
+/**
+ * The Fixture's second Literature Note Profile. Together with the built-in
+ * default Profile and its built-in document, it provides two document-backed
+ * layouts and two target folders for real-vault checks.
+ */
+export const LITERATURE_NOTE_PROFILES = [
+  {
+    id: BOOKS_PROFILE_ID,
+    label: "Books",
+    document: "zotlit-profile.books.md",
+    bindings: {
+      "note.literature-folder": "books",
+      "citation.references-style": INSTALLED_STYLES[0]!.id,
+    },
+  },
+] as const;
+
+/** Literature Note Template documents placed in the Fixture template folder. */
+export const LITERATURE_NOTE_DOCUMENTS = [
+  {
+    filename: "zotlit-profile.books.md",
+    source: `---
+id: ${BOOKS_PROFILE_ID}
+name: Books
+folder: books
+citationStyle: ${INSTALLED_STYLES[0]!.id}
+version: 1.0.0
+author: ZotLit
+description: A visibly distinct book layout for the End-to-end Run
+contract: 2
+filename: 'books-{{ zt.citationKey | default: zt.key }}{% suffix %}'
+frontmatter:
+  - key: fixture-title
+    expr: zt.title
+    merge: replace
+  - key: fixture-kind
+    value: {"$if":"zt.itemType == 'journalArticle'","then":"reference/article","else":"reference/other"}
+    merge: replace
+  - key: fixture-obsolete
+    value: {"$if":"zt.itemType == 'bookSection'","then":"retained"}
+    merge: replace
+  - value: {"fixture-spread-title":{"$eval":"zt.title"},"fixture-spread-kind":{"$eval":"zt.itemType"}}
+---
+# Book profile: {{ zt.title }}
+
+{% managed %}
+## Book details
+
+Citation key: {{ zt.citationKey }}
+{% endmanaged %}
+
+--- zotlit:annotation ---
+{% bq %}
+[!quote] Fixture page {{ zt.pageLabel }}
+
+{{ zt.text }}
+{% endbq %}
+`,
+  },
+] as const;
 
 const STRESS_ITEM_KEY_ALPHABET = "23456789ABCDEFGHIJKLMNPQRSTUVWXYZ";
 const STRESS_BUILD_SEED = 0x5eed_0000;
@@ -1076,7 +1292,7 @@ export function createStressItems(count: number): readonly FixtureItem[] {
       itemType: "journalArticle",
       citationKey: `stress${String(ordinal).padStart(7, "0")}`,
       title: `Synthetic stress item ${ordinal}`,
-      containerTitle: "Stress Build Journal",
+      venue: "Stress Build Journal",
       date: String(2000 + (seededIndex % 25)),
       creators: [author("Stress", `Author ${ordinal}`)],
       tags: [
@@ -1158,3 +1374,123 @@ export function findScopeCase(id: string): FixtureScopeCase {
   }
   return found;
 }
+
+/**
+ * Persisted shape of one Managed Frontmatter field, as ZotLit v2.1 saved it
+ * under `note.frontmatter-fields`.
+ */
+export interface FixtureFrontmatterField {
+  readonly key: string;
+  readonly expr: string;
+  readonly merge: "replace";
+  readonly language: "liquid";
+}
+
+/** One legacy Literature Note Template slot file the Upgrader vault ejects. */
+export interface FixtureLegacyTemplate {
+  /** Slot name; the file is `zotlit-<name>.liquid.md` in the template folder. */
+  readonly name: "filename" | "note" | "content" | "annotation";
+  /** Text present in the shipped default source; the build fails otherwise. */
+  readonly find: string;
+  /** Visible edit that stands in for a user's customization. */
+  readonly replace: string;
+}
+
+export interface FixtureVaultCase {
+  id: "configured" | "fresh" | "upgrader";
+  /** One line for the maintainer choosing a case. */
+  summary: string;
+}
+
+/**
+ * A Vault Case is a named, saved Fixture Vault state. The Scope Case selects
+ * the saved Library Scope; the Vault Case selects everything else the vault
+ * holds: settings file, notes, Profiles, and template files.
+ */
+export const VAULT_CASES: readonly FixtureVaultCase[] = [
+  {
+    id: "configured",
+    summary:
+      "Current settings, the Books Profile, Literature Notes (one stamped under the Books Profile), and Imported Notes. This is the default.",
+  },
+  {
+    id: "fresh",
+    summary:
+      "Vault with no notes, ZotLit installed, and no settings file: the new-user path.",
+  },
+  {
+    id: "upgrader",
+    summary:
+      "A ZotLit v2.1 vault: version-9 settings, ejected legacy slot files with visible edits, an edited Managed Frontmatter list.",
+  },
+];
+
+export const DEFAULT_VAULT_CASE = "configured";
+
+export function findVaultCase(id: string): FixtureVaultCase {
+  const found = VAULT_CASES.find((vaultCase) => vaultCase.id === id);
+  if (!found) {
+    throw new Error(
+      `unknown vault case "${id}". Known: ${VAULT_CASES.map((c) => c.id).join(", ")}`,
+    );
+  }
+  return found;
+}
+
+/** Settings version ZotLit v2.1.0 wrote, before Profiles absorbed the note bindings. */
+export const UPGRADER_SETTINGS_VERSION = 9;
+
+/** Plugin version the Upgrader vault records as its last launch. */
+export const UPGRADER_PLUGIN_VERSION = "2.1.0";
+
+/**
+ * The v2.1 `note.frontmatter-fields` list: the four shipped defaults, plus one
+ * visible addition so the list reads as user-edited.
+ */
+export const UPGRADER_FRONTMATTER_FIELDS: readonly FixtureFrontmatterField[] = [
+  { key: "title", expr: "zt.title", merge: "replace", language: "liquid" },
+  {
+    key: "related",
+    expr: "zt.relatedItems | note_links",
+    merge: "replace",
+    language: "liquid",
+  },
+  {
+    key: "collections",
+    expr: "zt.collections | collection_paths",
+    merge: "replace",
+    language: "liquid",
+  },
+  {
+    key: "citekey",
+    expr: "zt.citationKey",
+    merge: "replace",
+    language: "liquid",
+  },
+  { key: "year", expr: "zt.date.year", merge: "replace", language: "liquid" },
+];
+
+/**
+ * Legacy slot files the Upgrader vault ejects into its template folder. Each
+ * starts from the shipped Liquid default and carries one visible edit, so a
+ * converted document is recognizably the user's own and the trashed files are
+ * easy to tell from the defaults.
+ */
+export const UPGRADER_LEGACY_TEMPLATES: readonly FixtureLegacyTemplate[] = [
+  {
+    name: "filename",
+    find: "{{ zt.citationKey",
+    replace: "lit-{{ zt.citationKey",
+  },
+  {
+    name: "note",
+    find: "# {{ zt.title }}",
+    replace: "# {{ zt.title }} (v2.1 template)",
+  },
+  { name: "content", find: "## Notes", replace: "## Zotero notes" },
+  {
+    name: "annotation",
+    find: "[!note] Page",
+    replace: "[!quote] Page",
+  },
+];

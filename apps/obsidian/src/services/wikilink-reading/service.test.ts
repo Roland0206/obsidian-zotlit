@@ -1,8 +1,11 @@
 // @vitest-environment happy-dom
 import { Keymap, MarkdownView } from "obsidian";
-import type { MarkdownPostProcessor } from "obsidian";
+import type { MarkdownPostProcessor, MarkdownRenderChild } from "obsidian";
 import { describe, expect, it, vi } from "vitest";
 
+import type { Held } from "@/lib/held-reads";
+import * as m from "@/lib/i18n/generated/messages";
+import { unknownProfileDiagnostic } from "@/lib/profile-stamp";
 import { occurrences, rendered } from "@/services/citation-text/__fixtures__";
 import { citationKey } from "@/services/citation-text/present";
 import type { FormattedOccurrence } from "@/services/citation-text/present";
@@ -10,6 +13,8 @@ import type {
   CitationHoverRequest,
   NavigationPane,
 } from "@/services/citekey-navigation";
+import { NoteIndexStub } from "@/services/note-index/test-stub";
+import type { ProfilePresentationFailure } from "@/services/pandoc/document-presentation";
 import { defaults } from "@/services/settings/schema";
 import type { Settings } from "@/services/settings/schema";
 
@@ -39,6 +44,7 @@ interface Harness extends AsyncDisposable {
   renderHtml: (html: string) => Promise<HTMLElement>;
   /** Every Citation Popover the surface asked for. */
   requests: CitationHoverRequest[];
+  switchRequests: string[];
   /** Every Literature Note the popover's own open action reached for. */
   opened: [citekey: string, pane: NavigationPane][];
   /** Every gesture Obsidian's own delegated listeners would have answered. */
@@ -49,6 +55,8 @@ interface Harness extends AsyncDisposable {
     completion: Promise<void>;
   };
   rerenders: () => number;
+  /** Tears every rendered section down, the way Obsidian does on a re-render. */
+  unloadSections: () => void;
 }
 
 async function harness({
@@ -56,12 +64,15 @@ async function harness({
   citekeys,
   sourcePath = "note.md",
   pending,
+  presentationFailure,
   ...overrides
 }: Partial<Settings> & {
   /** The formatted citation the shared text holds, by its {@link held} identity. */
   formatted?: Record<string, string>;
   /** Keep the citation-text read pending. */
   pending?: boolean;
+  /** An unavailable Imported Note Profile held with the document text. */
+  presentationFailure?: ProfilePresentationFailure;
   /** The citekey resolution snapshot's answer for each Indexed Key. */
   citekeys?: Record<string, string>;
   /** The file that owns each rendered section. */
@@ -69,15 +80,21 @@ async function harness({
 } = {}): Promise<Harness> {
   const settings = new SettingsStub(overrides);
   const noteIndex = new NoteIndexStub();
-  const citationText = new CitationTextStub(formatted ?? {}, pending);
+  const citationText = new CitationTextStub(
+    formatted ?? {},
+    pending,
+    presentationFailure,
+  );
   const citationIndex = new CitationIndexStub(
     citekeys ?? { [WANG_KEY]: "wang2020" },
   );
   const requests: CitationHoverRequest[] = [];
+  const switchRequests: string[] = [];
   const opened: [citekey: string, pane: NavigationPane][] = [];
   const native: MouseEvent[] = [];
   let rerenders = 0;
   let process: MarkdownPostProcessor | undefined;
+  const children: MarkdownRenderChild[] = [];
   // The reading view a rendered section sits in, which Obsidian hangs both the
   // popover and its own delegated hover and click off.
   const containerEl = document.createElement("div");
@@ -85,14 +102,25 @@ async function harness({
   containerEl.addEventListener("click", (event) => native.push(event));
   // Obsidian places a section of this stubbed document nowhere, which is the
   // degraded tier: every Citation shows its source's first-occurrence text.
-  const ctx = { sourcePath, getSectionInfo: () => null } as never;
+  const ctx = {
+    sourcePath,
+    getSectionInfo: () => null,
+    addChild: (child: MarkdownRenderChild) => {
+      children.push(child);
+      child.load();
+    },
+  } as never;
   const view = Object.assign(Object.create(MarkdownView.prototype) as object, {
     previewMode: { rerender: () => rerenders++ },
     containerEl,
   });
   const service = new WikilinkReading({
     app: {
-      workspace: { getLeavesOfType: () => [{ view }] },
+      workspace: {
+        getLeavesOfType: () => [{ view }],
+        trigger: (_name: string, request: { path: string }) =>
+          switchRequests.push(request.path),
+      },
       vault: { getFileByPath: (path: string) => ({ path }) },
       metadataCache: {
         getFirstLinkpathDest: (linkpath: string, origin: string) =>
@@ -128,6 +156,7 @@ async function harness({
     citationText,
     citationIndex,
     requests,
+    switchRequests,
     opened,
     native,
     render: async (linktext) => {
@@ -157,6 +186,9 @@ async function harness({
       };
     },
     rerenders: () => rerenders,
+    unloadSections: () => {
+      for (const child of children.splice(0)) child.unload();
+    },
     [Symbol.asyncDispose]: () => service[Symbol.asyncDispose](),
   };
 }
@@ -210,7 +242,9 @@ describe("WikilinkReading rendering", () => {
   it("exposes both literal hooks when it renders a Literature Note Citation", async () => {
     await using harnessed = await harness({
       "citation.wikilink-citations": true,
-      formatted: { [held("[@wang2020, p. 7]")]: "(Wang et al. 2020, p. 7)" },
+      formatted: {
+        [held("[@wang2020, {p. 7}]")]: "(Wang et al. 2020, p. 7)",
+      },
     });
 
     const root = await harnessed.renderSection(`${WANG}#cite:locator=7`);
@@ -220,11 +254,43 @@ describe("WikilinkReading rendering", () => {
     expect(rendered?.classList.contains("zt-literature-note-link")).toBe(true);
   });
 
+  it("names an unavailable Imported Note Profile with an Obsidian tooltip", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      presentationFailure: {
+        kind: "unusable",
+        property: "profile",
+        diagnostic: unknownProfileDiagnostic("deleted-profile"),
+        target: "Imported/Research.md",
+      },
+    });
+
+    const root = await harnessed.renderSection(WANG);
+    const link = root.querySelector<HTMLElement>(
+      '[data-citation-presentation-error="profile"]',
+    );
+
+    expect(link?.getAttribute("aria-label")).toContain("deleted-profile");
+    expect(link?.getAttribute("aria-label")).toBe(
+      m.notice_imported_note_profile_unknown({
+        stamp: "deleted-profile",
+        target: "Imported/Research.md",
+      }),
+    );
+    const recovery = root.querySelector<HTMLButtonElement>(
+      "[data-profile-recovery]",
+    );
+    expect(recovery?.textContent).toBe(m.profile_switch_recovery());
+    recovery?.click();
+    expect(harnessed.switchRequests).toEqual(["Imported/Research.md"]);
+    expect(link?.title).toBe("");
+  });
+
   it("exposes the combined literal hooks once on a rendered Citation Run", async () => {
     await using harnessed = await harness({
       "citation.wikilink-citations": true,
       formatted: {
-        [held("[@wang2020, p. 7; @wang2020, p. 9]", [WANG_KEY, WANG_KEY])]:
+        [held("[@wang2020, {p. 7}; @wang2020, {p. 9}]", [WANG_KEY, WANG_KEY])]:
           "(Wang et al. 2020, pp. 7, 9)",
       },
     });
@@ -288,7 +354,9 @@ describe("WikilinkReading rendering", () => {
   it("shows the citation a style formatted once the shared text holds one", async () => {
     await using harnessed = await harness({
       "citation.wikilink-citations": true,
-      formatted: { [held("[@wang2020, p. 7]")]: "(Wang et al. 2020, p. 7)" },
+      formatted: {
+        [held("[@wang2020, {p. 7}]")]: "(Wang et al. 2020, p. 7)",
+      },
     });
 
     expect(await harnessed.render(`${WANG}#cite:locator=7`)).toBe(
@@ -300,7 +368,9 @@ describe("WikilinkReading rendering", () => {
     await using harnessed = await harness({
       "citation.wikilink-citations": true,
       "citation.show-formatted": false,
-      formatted: { [held("[@wang2020, p. 7]")]: "(Wang et al. 2020, p. 7)" },
+      formatted: {
+        [held("[@wang2020, {p. 7}]")]: "(Wang et al. 2020, p. 7)",
+      },
     });
 
     const root = await harnessed.renderSection(`${WANG}#cite:locator=7`);
@@ -350,7 +420,9 @@ describe("WikilinkReading hover", () => {
   const rendering = (overrides: Parameters<typeof harness>[0] = {}) =>
     harness({
       "citation.wikilink-citations": true,
-      formatted: { [held("[@wang2020, p. 7]")]: "(Wang et al. 2020, p. 7)" },
+      formatted: {
+        [held("[@wang2020, {p. 7}]")]: "(Wang et al. 2020, p. 7)",
+      },
       ...overrides,
     });
 
@@ -443,7 +515,9 @@ describe("WikilinkReading click", () => {
   const rendering = (overrides: Parameters<typeof harness>[0] = {}) =>
     harness({
       "citation.wikilink-citations": true,
-      formatted: { [held("[@wang2020, p. 7]")]: "(Wang et al. 2020, p. 7)" },
+      formatted: {
+        [held("[@wang2020, {p. 7}]")]: "(Wang et al. 2020, p. 7)",
+      },
       ...overrides,
     });
 
@@ -535,9 +609,6 @@ describe("WikilinkReading rerender", () => {
 
     noteIndex.emit("changed");
     expect(rerenders()).toBe(1);
-
-    noteIndex.emit("rebuilt");
-    expect(rerenders()).toBe(2);
   });
 
   it("renders again when a gating setting changes", async () => {
@@ -571,26 +642,14 @@ describe("WikilinkReading rerender", () => {
     expect(rerenders()).toBe(3);
   });
 
-  it("renders every reading view again when the citekey resolution snapshot rebuilds", async () => {
+  it("leaves the reading views alone when what a Citation says changes", async () => {
     await using harnessed = await harness();
-    const { citationIndex, rerenders } = harnessed;
+    const { citationIndex, citationText, rerenders } = harnessed;
 
     citationIndex.emit();
-    expect(rerenders()).toBe(1);
-  });
-
-  it("renders again when the shared citation text goes stale", async () => {
-    await using harnessed = await harness();
-
-    harnessed.citationText.emit();
-    expect(harnessed.rerenders()).toBe(1);
-  });
-
-  it("renders again when pending citation text settles", async () => {
-    await using harnessed = await harness();
-
-    harnessed.citationText.emit("changed");
-    expect(harnessed.rerenders()).toBe(1);
+    citationText.emit("invalidated");
+    citationText.emit("changed", "note.md");
+    expect(rerenders()).toBe(0);
   });
 
   it("leaves the reading views alone when an unrelated setting changes", async () => {
@@ -608,32 +667,228 @@ describe("WikilinkReading rerender", () => {
   });
 });
 
+describe("WikilinkReading refresh", () => {
+  const CITE = `${WANG}#cite:locator=7`;
+  const before = { [held("[@wang2020, {p. 7}]")]: "(Wang et al. 2020, p. 7)" };
+  const after = { [held("[@wang2020, {p. 7}]")]: "(Wang 2020, 7)" };
+
+  it("refreshes a rendered Citation in place when its document's text changes", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+    const anchor = root.querySelector("a");
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+
+    harnessed.citationText.hold(after);
+    harnessed.citationText.emit("changed", "note.md");
+
+    expect(root.textContent).toBe("(Wang 2020, 7)");
+    // The anchor stays the one Obsidian rendered, target and all.
+    expect(root.querySelector("a")).toBe(anchor);
+    expect(anchor?.dataset["href"]).toBe(CITE);
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("leaves another document's sections alone", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+
+    harnessed.citationText.hold(after);
+    harnessed.citationText.emit("changed", "other.md");
+
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("refreshes every live section when every document's text goes stale", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+
+    harnessed.citationText.hold(after);
+    harnessed.citationText.emit("invalidated");
+
+    expect(root.textContent).toBe("(Wang 2020, 7)");
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("keeps the current text when the fresh text holds nothing for a rendered Citation", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+
+    harnessed.citationText.hold({});
+    harnessed.citationText.emit("changed", "note.md");
+
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+    expect(root.querySelector(".zt-citation")).not.toBeNull();
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("keeps a rendered Citation Run in its one anchor and updates its text", async () => {
+    const source = held("[@wang2020, {p. 7}; @wang2020, {p. 9}]", [
+      WANG_KEY,
+      WANG_KEY,
+    ]);
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: { [source]: "(Wang et al. 2020, pp. 7, 9)" },
+    });
+    const root = await harnessed.renderHtml(
+      `<p>See ${internalLink(CITE)}; ${internalLink(`${WANG}#cite:locator=9`)} here.</p>`,
+    );
+    expect(root.textContent).toBe("See (Wang et al. 2020, pp. 7, 9) here.");
+
+    harnessed.citationText.hold({ [source]: "(Wang 2020, 7, 9)" });
+    harnessed.citationText.emit("invalidated");
+
+    expect(root.textContent).toBe("See (Wang 2020, 7, 9) here.");
+    expect(root.querySelectorAll("a")).toHaveLength(1);
+    expect(root.querySelector("a")?.dataset["href"]).toBe(CITE);
+  });
+
+  it("shows a Citation that rendered before its text was held once the text arrives", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: {},
+    });
+    const root = await harnessed.renderSection(CITE);
+    expect(root.querySelector(".zt-citation")).toBeNull();
+
+    harnessed.citationText.hold(before);
+    harnessed.citationText.emit("changed", "note.md");
+
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+    expect(root.querySelector(".zt-citation")).not.toBeNull();
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("shows a section that rendered while text was pending once it settles", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      pending: true,
+    });
+    const root = await harnessed.renderSection(CITE);
+    expect(root.textContent).toBe(`${WANG} > cite:locator=7`);
+
+    harnessed.citationText.hold(before);
+    harnessed.citationText.emit("changed", "note.md");
+
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("refreshes every live section when the citekey resolution snapshot rebuilds", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+
+    harnessed.citationText.hold(after);
+    harnessed.citationIndex.emit();
+
+    expect(root.textContent).toBe("(Wang 2020, 7)");
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("shows a link whose Item gained a native citation key at a snapshot rebuild", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+      citekeys: {},
+    });
+    const root = await harnessed.renderSection(CITE);
+    expect(root.textContent).toBe(`${WANG} > cite:locator=7`);
+
+    harnessed.citationIndex.resolve({ [WANG_KEY]: "wang2020" });
+    harnessed.citationIndex.emit();
+
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+    expect(harnessed.rerenders()).toBe(0);
+  });
+
+  it("answers one hover with one popover after a refresh", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+
+    harnessed.citationText.hold(after);
+    harnessed.citationText.emit("changed", "note.md");
+    root
+      .querySelector("a")
+      ?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+
+    expect(harnessed.requests).toHaveLength(1);
+  });
+
+  it("leaves a section Obsidian tore down alone", async () => {
+    await using harnessed = await harness({
+      "citation.wikilink-citations": true,
+      formatted: before,
+    });
+    const root = await harnessed.renderSection(CITE);
+    harnessed.unloadSections();
+
+    harnessed.citationText.hold(after);
+    harnessed.citationText.emit("invalidated");
+
+    expect(root.textContent).toBe("(Wang et al. 2020, p. 7)");
+  });
+});
+
 /** What the stub holds for one document, as a surface reads it. */
 interface HeldText {
   formatted: Map<string, FormattedOccurrence[]>;
+  entrySerials: boolean;
   summaries: Map<string, string>;
+  presentationFailure?: ProfilePresentationFailure;
+  literalWorks: Map<string, string>;
 }
 
 class CitationTextStub {
-  readonly #formatted: Record<string, string>;
-  readonly #pending: boolean;
-  readonly #listeners: Record<"changed" | "invalidated", Set<() => void>> = {
+  #formatted: Record<string, string>;
+  #pending: boolean;
+  readonly #presentationFailure: ProfilePresentationFailure | undefined;
+  readonly #listeners: Record<
+    "changed" | "invalidated",
+    Set<(path?: string) => void>
+  > = {
     changed: new Set(),
     invalidated: new Set(),
   };
 
-  constructor(formatted: Record<string, string>, pending = false) {
+  constructor(
+    formatted: Record<string, string>,
+    pending = false,
+    presentationFailure?: ProfilePresentationFailure,
+  ) {
     this.#formatted = formatted;
     this.#pending = pending;
+    this.#presentationFailure = presentationFailure;
   }
 
-  load(): Promise<HeldText> {
-    if (this.#pending) return new Promise(() => undefined);
-    return Promise.resolve(this.#text());
+  /** Replaces what the stub holds, the way a settled replacement read does. */
+  hold(formatted: Record<string, string>): void {
+    this.#formatted = formatted;
+    this.#pending = false;
   }
 
-  peek(): HeldText | null {
-    return this.#pending ? null : this.#text();
+  peek(): Held<HeldText> | null {
+    if (this.#pending) return null;
+    const value = this.#text();
+    return { value, status: "fresh", settled: Promise.resolve(value) };
   }
 
   #text(): HeldText {
@@ -641,40 +896,40 @@ class CitationTextStub {
     for (const [source, text] of Object.entries(this.#formatted)) {
       formatted.set(source, occurrences(rendered(text)));
     }
-    return { formatted, summaries: new Map() };
+    return {
+      formatted,
+      entrySerials: false,
+      summaries: new Map(),
+      literalWorks: new Map(),
+      ...(this.#presentationFailure
+        ? { presentationFailure: this.#presentationFailure }
+        : {}),
+    };
   }
 
-  on(event: "changed" | "invalidated", cb: () => void): () => void {
+  on(
+    event: "changed" | "invalidated",
+    cb: (path?: string) => void,
+  ): () => void {
     this.#listeners[event].add(cb);
     return () => this.#listeners[event].delete(cb);
   }
 
-  emit(event: "changed" | "invalidated" = "invalidated"): void {
-    for (const cb of this.#listeners[event]) cb();
-  }
-}
-
-class NoteIndexStub {
-  readonly #listeners: Record<"changed" | "rebuilt", Set<() => void>> = {
-    changed: new Set(),
-    rebuilt: new Set(),
-  };
-
-  on(event: "changed" | "rebuilt", cb: () => void): () => void {
-    this.#listeners[event].add(cb);
-    return () => this.#listeners[event].delete(cb);
-  }
-
-  emit(event: "changed" | "rebuilt"): void {
-    for (const cb of this.#listeners[event]) cb();
+  emit(event: "changed" | "invalidated" = "invalidated", path?: string): void {
+    for (const cb of this.#listeners[event]) cb(path);
   }
 }
 
 class CitationIndexStub {
-  readonly #citekeys: Record<string, string>;
+  #citekeys: Record<string, string>;
   readonly #listeners = new Set<() => void>();
 
   constructor(citekeys: Record<string, string>) {
+    this.#citekeys = citekeys;
+  }
+
+  /** Replaces the snapshot's answers, the way a rebuild does. */
+  resolve(citekeys: Record<string, string>): void {
     this.#citekeys = citekeys;
   }
 

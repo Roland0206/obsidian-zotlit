@@ -9,15 +9,20 @@
       "es2025.regexp",
       "esnext.array",
       "esnext.disposable",
+      // The Workbench renders Managed Frontmatter against `Temporal`, which the
+      // page and the render Worker polyfill when the runtime has none.
+      // @see src/lib/workbench/temporal.ts
+      "esnext.temporal",
       "DOM"
     ],
     "module": "esnext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "jsx": "react-jsx",
     "isolatedDeclarations": false,
     "noUncheckedSideEffectImports": true,
-    "types": ["vite/client", "node"],
+    "types": ["./worker-configuration.d.ts", "vite/client", "node"],
     "paths": {
       "@/*": ["./src/*"],
       "collections/*": ["./.source/*"]

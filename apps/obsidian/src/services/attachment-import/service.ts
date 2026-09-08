@@ -3,7 +3,8 @@ import { dirname as noteDirname } from "node:path/posix";
 import { debounce, FileSystemAdapter, normalizePath } from "obsidian";
 import type { App } from "obsidian";
 
-import type { TemplateLink } from "@zotlit/db";
+import type { Attachment, TemplateLink } from "@zotlit/db";
+import { parseAttachmentPath } from "@zotlit/db/path";
 import { createNanoEvents } from "@zotlit/shared/nanoevents";
 
 import { copyAttachments } from "@/lib/copy-attachments";
@@ -46,6 +47,27 @@ export {
   type SourceBlock,
   type SourceOrigin,
 } from "./source";
+
+export function attachmentSourceOrigin(
+  attachment: Attachment,
+): SourceOrigin | null {
+  const parsed = parseAttachmentPath(
+    attachment.path,
+    attachment.linkMode,
+    attachment.key,
+  );
+  switch (parsed.kind) {
+    case "storage":
+      return "storage";
+    case "linked-base":
+      return "linked-base";
+    case "linked-absolute":
+      return "linked-absolute";
+    case "linked-url":
+    case "unknown":
+      return null;
+  }
+}
 
 const logger = getLogger("attachment-import");
 
@@ -117,6 +139,11 @@ export interface AttachmentImport {
    */
   resolveLink(opts: ResolveLinkOptions): TemplateLink;
   flush(): Promise<AttachmentImportResult>;
+  /**
+   * Drop every copy queued since the last `flush()` without importing it, so
+   * a handle kept across drags carries nothing from a drag that never landed.
+   */
+  discard(): void;
 }
 
 export class AttachmentImportService extends Service<void> {
@@ -436,6 +463,13 @@ class AttachmentImportBatch implements AttachmentImport {
     };
     logger.debug("Imported attachments", { ...result });
     return result;
+  }
+
+  discard(): void {
+    const dropped = this.#items.splice(0).length;
+    if (dropped > 0) {
+      logger.debug("Discarded queued attachment imports", { dropped });
+    }
   }
 
   /**

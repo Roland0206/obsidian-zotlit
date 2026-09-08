@@ -57,6 +57,16 @@ export function getIcon(name: IconName): SVGSVGElement | null {
   return svg;
 }
 
+export function setIcon(el: HTMLElement, name: IconName): void {
+  const icon = getIcon(name);
+  el.replaceChildren(...(icon ? [icon] : []));
+}
+
+/** Stand-in for Obsidian's delegated tooltip attributes. */
+export function setTooltip(el: HTMLElement, tooltip: string): void {
+  el.setAttribute("aria-label", tooltip);
+}
+
 // Obsidian exposes `sleep` as a runtime global; toast durations await it.
 // Provide it for tests that exercise that code path.
 globalThis.sleep ??= (ms: number) =>
@@ -95,6 +105,46 @@ export class MarkdownView {
   previewMode = {
     rerender(_full?: boolean): void {},
   };
+}
+
+/**
+ * Stand-in for Obsidian's `Component`: the load/unload pair and the child
+ * list, which is what a post-processor's `ctx.addChild` hangs a render child
+ * on and what Obsidian tears down with the section.
+ */
+export class Component {
+  #loaded = false;
+  readonly #children: Component[] = [];
+
+  load(): void {
+    if (this.#loaded) return;
+    this.#loaded = true;
+    this.onload();
+    for (const child of this.#children) child.load();
+  }
+
+  unload(): void {
+    if (!this.#loaded) return;
+    this.#loaded = false;
+    for (const child of this.#children) child.unload();
+    this.onunload();
+  }
+
+  addChild<T extends Component>(child: T): T {
+    this.#children.push(child);
+    if (this.#loaded) child.load();
+    return child;
+  }
+
+  onload(): void {}
+  onunload(): void {}
+}
+
+/** Stand-in for `MarkdownRenderChild`: a component bound to one element. */
+export class MarkdownRenderChild extends Component {
+  constructor(readonly containerEl: HTMLElement) {
+    super();
+  }
 }
 
 /**
@@ -368,8 +418,18 @@ export class Scope {
   }
 }
 
+export abstract class FuzzySuggestModal<T> {
+  constructor(readonly app: App) {}
+  setPlaceholder(_placeholder: string): void {}
+  open(): void {}
+  abstract getItems(): T[];
+  abstract getItemText(item: T): string;
+  abstract onChooseItem(item: T): void;
+}
+
 export abstract class SuggestModal<T> {
   limit = 0;
+  readonly contentEl = { addClass: (_className: string) => {} };
   emptyStateText = "";
   readonly app: App;
   readonly scope = new Scope();
@@ -380,6 +440,11 @@ export abstract class SuggestModal<T> {
 
   setPlaceholder(_placeholder: string): void {}
   setInstructions(_instructions: Instruction[]): void {}
+  open(): void {}
+  close(): void {
+    this.onClose();
+  }
+  onClose(): void {}
   selectActiveSuggestion(_evt: MouseEvent | KeyboardEvent): void {}
 
   abstract getSuggestions(query: string): T[] | Promise<T[]>;
@@ -621,8 +686,8 @@ export class Modal {
   static instances: Modal[] = [];
 
   containerEl: HTMLElement = noticeElStub;
-  modalEl: HTMLElement = noticeElStub;
-  contentEl: HTMLElement = containerElStub();
+  modalEl: HTMLElement = elementOrStub();
+  contentEl: HTMLElement = elementOrStub();
 
   title = "";
   isOpen = false;
@@ -657,6 +722,14 @@ export class Modal {
   onClose(): void {}
 }
 
+/** A real element under a DOM environment, so a dialog can build its body and
+ * footer; the row-only stub elsewhere. */
+function elementOrStub(): HTMLElement {
+  return globalThis.document
+    ? document.createElement("div")
+    : containerElStub();
+}
+
 /** Minimal container a `Setting` row attaches itself to. */
 function containerElStub(): HTMLElement {
   return {
@@ -673,6 +746,24 @@ export function settingsOf(containerEl: HTMLElement): Setting[] {
   return settingRows.get(containerEl) ?? [];
 }
 
+type Control =
+  | ButtonComponent
+  | DropdownComponent
+  | TextComponent
+  | ToggleComponent;
+const controls = new WeakMap<HTMLElement, Control[]>();
+function registerControl(containerEl: HTMLElement, control: Control): void {
+  const list = controls.get(containerEl) ?? [];
+  list.push(control);
+  controls.set(containerEl, list);
+}
+
+/** The controls built directly on one container, in the order built; a dialog
+ * that lays its own fields out (no `Setting` row) is read through this. */
+export function controlsOf(containerEl: HTMLElement): Control[] {
+  return controls.get(containerEl) ?? [];
+}
+
 /**
  * Stand-in for one `Setting` row. It records what it was named and holds the
  * components it was given, so a test reads a dialog the way a user does and
@@ -680,16 +771,20 @@ export function settingsOf(containerEl: HTMLElement): Setting[] {
  * TextComponent.type}, and {@link ButtonComponent.click}.
  */
 export class Setting {
+  readonly settingEl = containerElStub();
+  readonly controlEl = containerElStub();
   /** Every component added to this row, in the order it was added. */
   readonly components: (
     | ButtonComponent
     | DropdownComponent
     | ExtraButtonComponent
     | TextComponent
+    | ToggleComponent
   )[] = [];
 
   name = "";
   desc = "";
+  errorMessage: string | null = null;
 
   constructor(readonly containerEl: HTMLElement) {
     const rows = settingRows.get(containerEl) ?? [];
@@ -707,12 +802,29 @@ export class Setting {
     return this;
   }
 
+  setErrorMessage(message: string | null): this {
+    this.errorMessage = message;
+    return this;
+  }
+
+  setHeading(): this {
+    return this;
+  }
+
   addDropdown(cb: (dropdown: DropdownComponent) => unknown): this {
     return this.#add(new DropdownComponent(this.containerEl), cb);
   }
 
   addText(cb: (text: TextComponent) => unknown): this {
     return this.#add(new TextComponent(this.containerEl), cb);
+  }
+
+  addTextArea(cb: (text: TextAreaComponent) => unknown): this {
+    return this.#add(new TextAreaComponent(this.containerEl), cb);
+  }
+
+  addToggle(cb: (toggle: ToggleComponent) => unknown): this {
+    return this.#add(new ToggleComponent(this.containerEl), cb);
   }
 
   addButton(cb: (button: ButtonComponent) => unknown): this {
@@ -728,7 +840,8 @@ export class Setting {
       | ButtonComponent
       | DropdownComponent
       | ExtraButtonComponent
-      | TextComponent,
+      | TextComponent
+      | ToggleComponent,
   >(component: T, cb: (component: T) => unknown): this {
     this.components.push(component);
     cb(component);
@@ -750,7 +863,9 @@ export class DropdownComponent {
   #value = "";
   #changed: ((value: string) => unknown) | null = null;
 
-  constructor(readonly containerEl: HTMLElement) {}
+  constructor(readonly containerEl: HTMLElement) {
+    registerControl(containerEl, this);
+  }
 
   addOption(value: string, label: string): this {
     this.options.push({ value, label });
@@ -783,6 +898,7 @@ export class DropdownComponent {
 function inputElStub(): HTMLInputElement {
   const input = {
     value: "",
+    addClass: (..._classNames: string[]) => {},
     placeholder: "",
     validationMessage: "",
     setCustomValidity: (message: string) => {
@@ -798,7 +914,9 @@ export class TextComponent {
 
   #changed: ((value: string) => unknown) | null = null;
 
-  constructor(readonly containerEl: HTMLElement) {}
+  constructor(readonly containerEl: HTMLElement) {
+    registerControl(containerEl, this);
+  }
 
   getValue(): string {
     return this.inputEl.value;
@@ -826,6 +944,32 @@ export class TextComponent {
   }
 }
 
+export class TextAreaComponent extends TextComponent {}
+
+export class ToggleComponent {
+  #value = false;
+  #changed: ((value: boolean) => unknown) | undefined;
+  constructor(readonly containerEl: HTMLElement) {
+    registerControl(containerEl, this);
+  }
+  getValue(): boolean {
+    return this.#value;
+  }
+  setValue(value: boolean): this {
+    this.#value = value;
+    return this;
+  }
+  onChange(callback: (value: boolean) => unknown): this {
+    this.#changed = callback;
+    return this;
+  }
+  /** Test helper: change the checked state, as the user does. */
+  toggle(value: boolean): void {
+    this.setValue(value);
+    this.#changed?.(value);
+  }
+}
+
 /**
  * The borderless icon action a row carries beside its control. It is read by
  * the tooltip it names, which is the label the user gets from it.
@@ -834,6 +978,8 @@ export class ExtraButtonComponent {
   icon = "";
   /** The label the button carries, as the user reads it on hover. */
   tooltip = "";
+  /** Whether the row locked the button, as the user finds it. */
+  disabled = false;
 
   #clicked: ((evt: MouseEvent) => unknown) | null = null;
 
@@ -841,6 +987,11 @@ export class ExtraButtonComponent {
 
   setIcon(icon: string): this {
     this.icon = icon;
+    return this;
+  }
+
+  setDisabled(disabled: boolean): this {
+    this.disabled = disabled;
     return this;
   }
 
@@ -861,14 +1012,37 @@ export class ExtraButtonComponent {
 }
 
 export class ButtonComponent {
+  setDestructive(): this {
+    return this;
+  }
   buttonEl: HTMLElement = noticeElStub;
 
   /** The label the button carries, as the user reads it. */
   text = "";
+  icon = "";
+  /** The label an icon-only button carries, as the user reads it on hover. */
+  tooltip = "";
+
+  setIcon(icon: string): this {
+    this.icon = icon;
+    return this;
+  }
+
+  setTooltip(tooltip: string): this {
+    this.tooltip = tooltip;
+    return this;
+  }
+
+  then(cb: (button: this) => unknown): this {
+    cb(this);
+    return this;
+  }
 
   #clicked: ((evt: MouseEvent) => unknown) | null = null;
 
-  constructor(readonly containerEl: HTMLElement) {}
+  constructor(readonly containerEl: HTMLElement) {
+    registerControl(containerEl, this);
+  }
 
   onClick(cb: (evt: MouseEvent) => unknown): this {
     this.#clicked = cb;
@@ -877,6 +1051,10 @@ export class ButtonComponent {
 
   setButtonText(text: string): this {
     this.text = text;
+    return this;
+  }
+
+  setDisabled(_disabled: boolean): this {
     return this;
   }
 
@@ -891,5 +1069,48 @@ export class ButtonComponent {
   /** Test helper: press the button, as the user does. */
   click(): void {
     this.#clicked?.({} as MouseEvent);
+  }
+}
+
+export class ConfirmationButton extends ButtonComponent {
+  setDisabled(_disabled: boolean): this {
+    return this;
+  }
+  setDestructive(): this {
+    return this;
+  }
+}
+
+export class ConfirmationModal {
+  readonly contentEl = globalThis.document
+    ? document.createElement("div")
+    : containerElStub();
+  #closed: (() => void) | undefined;
+  constructor(_app: App) {}
+  setTitle(_title: string): this {
+    return this;
+  }
+  setContent(content: string | DocumentFragment): this {
+    if (typeof content === "string") this.contentEl.textContent = content;
+    else this.contentEl.replaceChildren(content);
+    return this;
+  }
+  addCheckbox(_label: string, _changed: (value: boolean) => void): this {
+    return this;
+  }
+  addButton(cb: (button: ConfirmationButton) => unknown): this {
+    cb(new ConfirmationButton(noticeElStub));
+    return this;
+  }
+  addCancelButton(_label: string): this {
+    return this;
+  }
+  setCloseCallback(callback: () => void): this {
+    this.#closed = callback;
+    return this;
+  }
+  open(): void {}
+  close(): void {
+    this.#closed?.();
   }
 }

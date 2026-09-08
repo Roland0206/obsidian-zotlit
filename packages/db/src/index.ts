@@ -18,6 +18,11 @@ export {
   type Item,
 } from "./queries/items";
 export {
+  itemBaseFields,
+  resolveVenue,
+  type ItemBaseFields,
+} from "./lib/zt-venue";
+export {
   itemToCsl,
   type CslDate,
   type CslItemData,
@@ -76,6 +81,11 @@ export {
 export { resolveItemTags, type TagMemo } from "./queries/tags";
 export { getRelatedKeysByItemID } from "./queries/item-relations";
 export { CollectionCache, type TemplateCollection } from "./lib/zt-collection";
+export {
+  getCollectionIDsByItem,
+  getCollectionNodesByLibrary,
+  type CollectionNode,
+} from "./queries/collections";
 export {
   getAnnotViewAnnotations,
   getAnnotViewAttachments,

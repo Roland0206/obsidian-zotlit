@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { dirname } from "node:path/posix";
-import { FileSystemAdapter, Notice, normalizePath } from "obsidian";
+import { FileSystemAdapter, normalizePath } from "obsidian";
 import type { Vault } from "obsidian";
+import * as v from "valibot";
 
 import type { Attachment, Item } from "@zotlit/db";
 import { attachmentAbsPath } from "@zotlit/db/path";
@@ -32,6 +33,50 @@ export interface AdapterPlacementContract {
   fallback?: { reasons?: string[] } | null;
 }
 
+const vaultRelativePath = v.pipe(
+  v.string(),
+  v.check(
+    (path) =>
+      path.length > 0 &&
+      !path.includes("\\") &&
+      !path.includes(":") &&
+      !path.includes("\0") &&
+      path
+        .split("/")
+        .every((part) => part !== "" && part !== "." && part !== ".."),
+    "Placement path must be vault-relative without traversal",
+  ),
+);
+
+const placementSchema = v.object({
+  schemaVersion: v.literal(1),
+  adapter: v.literal("zotlit"),
+  action: v.literal("upsert_source"),
+  state: v.literal("ready"),
+  mode: v.literal("canonical_bundle"),
+  paths: v.object({
+    sourceNote: vaultRelativePath,
+    pdf: v.optional(v.nullable(vaultRelativePath)),
+    sourceResources: v.optional(v.nullable(vaultRelativePath)),
+  }),
+  permissions: v.object({
+    writeSourceNote: v.literal(true),
+    overwriteSourceNote: v.literal(false),
+    copyPdf: v.optional(v.boolean()),
+    writeSourceResources: v.optional(v.boolean()),
+    writeSummary: v.optional(v.literal(false)),
+  }),
+  artifactBundleFrontmatter: v.optional(
+    v.nullable(v.record(v.string(), v.unknown())),
+  ),
+});
+
+export function parseAdapterPlacementContract(
+  value: unknown,
+): AdapterPlacementContract {
+  return v.parse(placementSchema, value);
+}
+
 export async function resolveAdapterPlacement({
   app,
   settings,
@@ -46,10 +91,9 @@ export async function resolveAdapterPlacement({
   if (!settings["lit-management.placement-enabled"]) return null;
   const vaultRoot = vaultBasePath(app);
   if (!vaultRoot) {
-    new Notice(
+    throw new Error(
       "lit-management placement unavailable: vault path is not a filesystem path",
     );
-    return null;
   }
 
   const request = {
@@ -80,19 +124,30 @@ export async function resolveAdapterPlacement({
       input: JSON.stringify(request),
       cwd: vaultRoot,
     });
-    return JSON.parse(stdout) as AdapterPlacementContract;
+    return parseAdapterPlacementContract(JSON.parse(stdout));
   } catch (error) {
     logger.warn("lit-management adapter-placement failed", { error });
-    new Notice("lit-management placement failed; ZotLit default path used");
-    return null;
+    throw new Error("lit-management placement failed; note creation stopped", {
+      cause: error,
+    });
   }
 }
 
 export function contractSourcePath(
   contract: AdapterPlacementContract | null,
 ): string | null {
-  const path = contract?.paths?.sourceNote;
-  return typeof path === "string" && path.trim() ? normalizePath(path) : null;
+  if (contract === null) return null;
+  if (
+    contract.state !== "ready" ||
+    contract.mode !== "canonical_bundle" ||
+    contract.permissions?.writeSourceNote !== true ||
+    contract.permissions.overwriteSourceNote !== false
+  ) {
+    throw new Error(
+      "lit-management placement requires create-only Source Note permission",
+    );
+  }
+  return normalizePath(v.parse(vaultRelativePath, contract.paths?.sourceNote));
 }
 
 export function contractPdfPath(

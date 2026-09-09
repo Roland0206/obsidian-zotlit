@@ -1,5 +1,6 @@
 import { basename } from "node:path/posix";
-import { stringifyYaml, TFile } from "obsidian";
+import { stringifyYaml } from "obsidian";
+import type { TFile } from "obsidian";
 
 import {
   citekeysToCiteTemplateData,
@@ -888,7 +889,6 @@ async function createNote(
         groupIdMemo: options.groupIdMemo,
         username,
         frontmatter: contractFrontmatter(placement),
-        overwriteExisting: placedPath !== null,
         sourcePdf,
         vaultPdfPath: contractPdfPath(placement),
         pdfFolderPath: contractPdfFolderPath(placement),
@@ -942,7 +942,6 @@ async function writeNewNote(
     groupIdMemo?: GroupIDMemo;
     username: string | null;
     frontmatter?: Record<string, unknown>;
-    overwriteExisting?: boolean;
     sourcePdf?: PdfAttachmentSource | null;
     vaultPdfPath?: string | null;
     pdfFolderPath?: string;
@@ -1005,17 +1004,7 @@ async function writeNewNote(
       : stringifyYaml(fm)
   }---\n${body}`;
 
-  const existing = options.overwriteExisting
-    ? ctx.app.vault.getAbstractFileByPath(path)
-    : null;
-  const file =
-    existing instanceof TFile
-      ? await overwritePlacedNote(ctx, {
-          file: existing,
-          content,
-          itemKey: item.indexedKey,
-        })
-      : await ctx.app.vault.create(path, content);
+  const file = await ctx.app.vault.create(path, content);
   options.onFileCreated?.(file);
   await attachmentImport.flush();
   await noteImport.flush();
@@ -1046,18 +1035,6 @@ function resolvePlacedPdfImport(
         ? placedLink
         : attachmentImport.resolveLink(input),
   };
-}
-
-async function overwritePlacedNote(
-  ctx: OpsContext,
-  options: { file: TFile; content: string; itemKey: string },
-): Promise<TFile> {
-  await ctx.app.vault.process(options.file, () => options.content);
-  logger.info("Overwrote lit-management placed literature note", {
-    path: options.file.path,
-    itemKey: options.itemKey,
-  });
-  return options.file;
 }
 
 async function updateNote(

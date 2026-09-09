@@ -1413,6 +1413,69 @@ describe("createNote", () => {
     );
   });
 
+  it.each(["index lag", "create race"])(
+    "preserves an occupied canonical Source Note during %s",
+    async (scenario) => {
+      vi.mocked(fetchNoteContext).mockReturnValue(createGateContext());
+      const path = "library/root--frozen/Source - root.md";
+      const app = makeApp();
+      using process = vi.spyOn(app.vault, "process");
+      const humanContent = "Human findings and existing managed content";
+      if (scenario === "index lag") await app.vault.create(path, humanContent);
+      app.vault.create.mockImplementation(async () => {
+        app.vault.contentByPath.set(path, humanContent);
+        throw new Error("File already exists.");
+      });
+      using _placement = vi
+        .spyOn(adapterPlacement, "resolveAdapterPlacement")
+        .mockResolvedValue({
+          state: "ready",
+          mode: "canonical_bundle",
+          paths: { sourceNote: path },
+          permissions: { writeSourceNote: true, overwriteSourceNote: false },
+        });
+      const deps = placementTestDeps(app);
+      const flush = vi.fn();
+      deps.attachmentImport = {
+        prepare: async () => ({
+          ...(await blockedAttachmentImport.prepare()),
+          flush,
+        }),
+      };
+      await expect(
+        createNoteFeature(deps).createNote(makeCreateGateItem()),
+      ).rejects.toThrow("File already exists.");
+      expect(app.vault.contentByPath.get(path)).toBe(humanContent);
+      expect(process).not.toHaveBeenCalled();
+      expect(flush).not.toHaveBeenCalled();
+      expect([...app.vault.contentByPath.keys()]).toEqual([path]);
+    },
+  );
+
+  it.each([false, undefined])(
+    "refuses placement when writeSourceNote is %s",
+    async (writeSourceNote) => {
+      vi.mocked(fetchNoteContext).mockReturnValue(createGateContext());
+      const app = makeApp();
+      using process = vi.spyOn(app.vault, "process");
+      using _placement = vi
+        .spyOn(adapterPlacement, "resolveAdapterPlacement")
+        .mockResolvedValue({
+          state: "ready",
+          mode: "canonical_bundle",
+          paths: { sourceNote: "library/root/Source - root.md" },
+          permissions: { writeSourceNote, overwriteSourceNote: false },
+        });
+      await expect(
+        createNoteFeature(placementTestDeps(app)).createNote(
+          makeCreateGateItem(),
+        ),
+      ).rejects.toThrow();
+      expect(app.vault.create).not.toHaveBeenCalled();
+      expect(process).not.toHaveBeenCalled();
+    },
+  );
+
   it("honors adapter placement from a prepared Profile and applies Attachment Import policy", async () => {
     const profileId = "Bk3Qn7XvT2Lp" as ProfileId;
     const item = makeItem({
@@ -1459,7 +1522,11 @@ describe("createNote", () => {
           sourceNote: "lit-managed/root2024.md",
           pdf: "lit-managed/resources/root2024.pdf",
         },
-        permissions: { copyPdf: true },
+        permissions: {
+          copyPdf: true,
+          writeSourceNote: true,
+          overwriteSourceNote: false,
+        },
       });
     const app = makeApp();
     const deps: SyncRenderDeps = {
@@ -4497,6 +4564,34 @@ function makeItem(
     fields,
     baseFields,
     venue: resolveVenue(baseFields),
+  };
+}
+
+function placementTestDeps(app: MockNoteApp): SyncRenderDeps {
+  return {
+    app,
+    template: makeTemplate(),
+    db: makeDb(),
+    noteIndex: {
+      getImportedNoteByNoteKey: () => [],
+      ready: Promise.resolve(),
+      whenIndexed: async () => {},
+      getNotesByItemKey: () => [],
+    },
+    zoteroPref: { dataDir: "/zotero", baseAttachmentPath: null },
+    settings: makeSettings({ "lit-management.placement-enabled": true }),
+    attachmentImport: blockedAttachmentImport,
+    noteImport: {
+      prepare: async () => ({
+        resolveChildNote: () => ({
+          key: "",
+          indexedKey: "",
+          title: null,
+          noteLink: () => "",
+        }),
+        flush: async () => ({ created: 0, skipped: 0, failed: 0 }),
+      }),
+    },
   };
 }
 

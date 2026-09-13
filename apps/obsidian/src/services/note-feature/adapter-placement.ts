@@ -160,12 +160,14 @@ export async function resolveAdapterPlacement({
   settings,
   item,
   pdfPath,
+  approvedDecisionHash,
   reviewPlacement = requestAdapterPlacementReview,
 }: {
   app: App & { vault: Pick<Vault, "adapter"> };
   settings: Readonly<Settings>;
   item: Item;
   pdfPath?: string | null;
+  approvedDecisionHash?: string;
   reviewPlacement?: (
     app: App,
     proposal: AdapterPlacementProposal,
@@ -209,7 +211,15 @@ export async function resolveAdapterPlacement({
     if (initial.proposal.decisionHash !== initial.decisionHash) {
       throw new Error("lit-management placement proposal hash is inconsistent");
     }
-    const approved = await reviewPlacement(app, initial.proposal);
+    if (
+      approvedDecisionHash !== undefined &&
+      approvedDecisionHash !== initial.decisionHash
+    ) {
+      throw new Error("approved placement decision is stale");
+    }
+    const approved =
+      approvedDecisionHash !== undefined ||
+      (await reviewPlacement(app, initial.proposal));
     if (!approved) throw new Error("lit-management placement review cancelled");
     const approvedContract = await executePlacementRequest({
       settings,

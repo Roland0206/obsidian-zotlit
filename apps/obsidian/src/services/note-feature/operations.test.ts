@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { TFile, TFolder } from "obsidian";
 import type { FileManager } from "obsidian";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +10,7 @@ import {
   fetchNoteContext,
   getAnnotationsByItemId,
   getChildNotesByParentIDs,
+  getCitekeyByItemKey,
   getItemsByKey,
   itemBaseFields,
   resolveIndexedKeyLibrary,
@@ -119,6 +121,7 @@ vi.mock("@zotlit/db", async (importOriginal) => {
         return new Map();
       }
     },
+    getCitekeyByItemKey: vi.fn(),
     resolveItemTags: () => [],
     // The single-item create / update paths resolve the account identity from
     // the pinned client; stub it so the note-feature flow under test stays
@@ -1431,8 +1434,15 @@ describe("createNote", () => {
         .mockResolvedValue({
           state: "ready",
           mode: "canonical_bundle",
+          decisionHash: "test-decision",
           paths: { sourceNote: path },
-          permissions: { writeSourceNote: true, overwriteSourceNote: false },
+          permissions: {
+            copyPdf: false,
+            writeSourceNote: true,
+            overwriteSourceNote: false,
+            writeSourceResources: false,
+            writeSummary: false,
+          },
         });
       const deps = placementTestDeps(app);
       const flush = vi.fn();
@@ -1463,8 +1473,15 @@ describe("createNote", () => {
         .mockResolvedValue({
           state: "ready",
           mode: "canonical_bundle",
+          decisionHash: "test-decision",
           paths: { sourceNote: "library/root/Source - root.md" },
-          permissions: { writeSourceNote, overwriteSourceNote: false },
+          permissions: {
+            copyPdf: false,
+            writeSourceNote: writeSourceNote as boolean,
+            overwriteSourceNote: false,
+            writeSourceResources: false,
+            writeSummary: false,
+          },
         });
       await expect(
         createNoteFeature(placementTestDeps(app)).createNote(
@@ -1518,6 +1535,7 @@ describe("createNote", () => {
       .mockResolvedValue({
         state: "ready",
         mode: "canonical_bundle",
+        decisionHash: "test-decision",
         paths: {
           sourceNote: "lit-managed/root2024.md",
           pdf: "lit-managed/resources/root2024.pdf",
@@ -1526,6 +1544,8 @@ describe("createNote", () => {
           copyPdf: true,
           writeSourceNote: true,
           overwriteSourceNote: false,
+          writeSourceResources: false,
+          writeSummary: false,
         },
       });
     const app = makeApp();
@@ -2246,6 +2266,167 @@ function stubIndexedKeyUpdate(context: NoteTemplateContext): void {
   ]);
   vi.mocked(fetchNoteContext).mockReturnValue(context);
 }
+
+describe("repairDuplicateFrontmatterFields", () => {
+  it("removes only the second copy of selected identical fields", async () => {
+    const original =
+      "---\n" +
+      "citekey: smith2024\n" +
+      "generated_by: lit-management\n" +
+      "source_note_stub: true\n" +
+      "generated_by: lit-management\n" +
+      "source_note_stub: true\n" +
+      "---\n" +
+      "User-owned body\n";
+    const harness = makeUpdateHarness({ content: original });
+
+    const result = await createNoteFeature(
+      harness.deps,
+    ).repairDuplicateFrontmatterFields(makeFile("Literature/Root.md"), [
+      "generated_by",
+      "source_note_stub",
+    ]);
+
+    expect(result).toEqual({ removed: 2 });
+    expect(harness.content()).toBe(
+      "---\n" +
+        "citekey: smith2024\n" +
+        "generated_by: lit-management\n" +
+        "source_note_stub: true\n" +
+        "---\n" +
+        "User-owned body\n",
+    );
+    expect(harness.frontmatterMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("bindLiteratureNote", () => {
+  it("adds only the Zotero key and preserves the remaining bytes", async () => {
+    vi.mocked(resolveIndexedKeyLibrary).mockReturnValue({
+      key: "ABC12345",
+      libraryID: 1,
+    });
+    vi.mocked(getCitekeyByItemKey).mockReturnValue("smith2024");
+    const original =
+      "---\n" +
+      "title: A Study\n" +
+      "citekey: smith2024\n" +
+      "source_provenance:\n" +
+      "  citekey: nested-value\n" +
+      "---\n" +
+      "User-owned body\n";
+    const harness = makeUpdateHarness({
+      content: original,
+      frontmatter: { [FIELD_CITEKEY]: "smith2024" },
+    });
+
+    const result = await createNoteFeature(harness.deps).bindLiteratureNote(
+      makeFile("Literature/Root.md"),
+      { citekey: "smith2024", indexedKey: "ABC12345" },
+    );
+
+    expect(result).toEqual({ updated: true });
+    expect(harness.content()).toBe(
+      original.replace(
+        "citekey: smith2024\n",
+        "citekey: smith2024\nzotero-key: ABC12345\n",
+      ),
+    );
+    expect(harness.frontmatterMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a note that already has a different Zotero key", async () => {
+    const harness = makeUpdateHarness({
+      content: "---\ncitekey: smith2024\nzotero-key: OLD12345\n---\n",
+      frontmatter: {
+        [FIELD_CITEKEY]: "smith2024",
+        [FIELD_ZOTERO_KEY]: "OLD12345",
+      },
+    });
+
+    await expect(
+      createNoteFeature(harness.deps).bindLiteratureNote(
+        makeFile("Literature/Root.md"),
+        { citekey: "smith2024", indexedKey: "ABC12345" },
+      ),
+    ).rejects.toThrow("already has a different Zotero key");
+    expect(harness.processMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("migrateLiteratureBundleMetadata", () => {
+  it("applies one hash-bound reviewed metadata replacement", async () => {
+    vi.mocked(resolveIndexedKeyLibrary).mockReturnValue({
+      key: "ABC12345",
+      libraryID: 1,
+    });
+    vi.mocked(getCitekeyByItemKey).mockReturnValue("smith2024");
+    const original =
+      "---\n" +
+      "citekey: smith2024\n" +
+      "zotero-key: ABC12345\n" +
+      "artifact_bundle:\n" +
+      "  stored_placement_decision_hash: old-hash\n" +
+      "---\n" +
+      "[PDF](attachments/smith2024.pdf)\n";
+    const harness = makeUpdateHarness({ content: original });
+    const decision = {
+      canonicalIdentity: "zotero:ABC12345",
+      title: "Résonateur",
+    };
+    const decisionHash =
+      "38e136cc9607f5f110ca6d0061f4e9f4902d06568ed0b0b75aff24575c926115";
+
+    const result = await createNoteFeature(
+      harness.deps,
+    ).migrateLiteratureBundleMetadata(makeFile("Literature/Root.md"), {
+      sourceSha256: createHash("sha256").update(original).digest("hex"),
+      oldCitekey: "smith2024",
+      oldIndexedKey: "ABC12345",
+      oldStoredDecisionHash: "old-hash",
+      newCitekey: "smith2024",
+      newIndexedKey: "ABC12345",
+      newCanonicalIdentity: "zotero:ABC12345",
+      verifyCurrentZoteroIdentity: true,
+      newArtifactBundle: {
+        artifact_identity: "zotero:ABC12345",
+        citekey: "smith2024",
+        placement_decision: decision,
+        stored_placement_decision_hash: decisionHash,
+      },
+      bodyReplacements: [
+        { old: "attachments/smith2024.pdf", new: "smith2024.pdf" },
+      ],
+    });
+
+    expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(harness.content()).toContain(
+      `stored_placement_decision_hash: ${decisionHash}`,
+    );
+    expect(harness.content()).toContain("[PDF](smith2024.pdf)");
+  });
+
+  it("refuses a changed Source Note before mutation", async () => {
+    const harness = makeUpdateHarness({
+      content: "---\ncitekey: smith2024\nzotero-key: ABC12345\n---\n",
+    });
+
+    await expect(
+      createNoteFeature(harness.deps).migrateLiteratureBundleMetadata(
+        makeFile("Literature/Root.md"),
+        {
+          sourceSha256: "0".repeat(64),
+          oldCitekey: "smith2024",
+          oldIndexedKey: "ABC12345",
+          newCitekey: "smith2024",
+          newIndexedKey: "ABC12345",
+          newCanonicalIdentity: "zotero:ABC12345",
+          newArtifactBundle: {},
+        },
+      ),
+    ).rejects.toThrow("changed after bundle migration review");
+  });
+});
 
 describe("updateNote", () => {
   it("gates a stamped added Profile while legacy conversion is pending", async () => {

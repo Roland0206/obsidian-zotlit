@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { basename } from "node:path/posix";
 import { stringifyYaml } from "obsidian";
 import type { TFile } from "obsidian";
+import { parse as parseYaml, stringify as stringifyYamlDocument } from "yaml";
 
 import {
   citekeysToCiteTemplateData,
@@ -10,6 +12,7 @@ import {
   getAnnotationsByItemId,
   getAttachmentsByParents,
   getChildNotesByParentIDs,
+  getCitekeyByItemKey,
   getZoteroIdentity,
   getItemsByKey,
   resolveIndexedKeyLibrary,
@@ -37,7 +40,9 @@ import {
 } from "@/lib/annotation-render";
 import {
   FIELD_CITATION_STYLE,
+  FIELD_CITEKEY,
   FIELD_LITERATURE_NOTE_PROFILE,
+  FIELD_ZOTERO_KEY,
 } from "@/lib/constants";
 import {
   ensureParentFolder,
@@ -288,6 +293,8 @@ export interface CreateNoteOptions {
    * with another Profile is a conflict rather than accepted as-is.
    */
   profile?: ProfileSelector;
+  /** Exact engine proposal hash approved outside the interactive modal. */
+  placementDecisionHash?: string;
 }
 
 interface CreateNoteInternalOptions extends CreateNoteOptions {
@@ -332,6 +339,21 @@ type OpsContext = NoteFeatureDeps & { events: Emitter<NoteFeatureEvents> };
  * The bound note-feature operations returned by {@link createNoteFeature}.
  * Consumers hold this object; the collaborators stay behind the seam.
  */
+export interface LiteratureBundleMetadataMigration {
+  sourceSha256: string;
+  oldCitekey: string;
+  oldIndexedKey: string;
+  oldStoredDecisionHash?: string;
+  newCitekey: string;
+  newIndexedKey: string;
+  newCanonicalIdentity: string;
+  verifyCurrentZoteroIdentity?: boolean;
+  newArtifactBundle: Record<string, unknown>;
+  newAttachments?: readonly string[];
+  aliasesToAdd?: readonly string[];
+  bodyReplacements?: readonly { old: string; new: string }[];
+}
+
 export interface NoteFeature {
   /**
    * Settles when templates and the note index are usable. Single-item methods
@@ -358,6 +380,25 @@ export interface NoteFeature {
     item: Item,
     options?: CreateNoteOptions,
   ): Promise<CreateNoteResult>;
+  createNoteByIndexedKey(
+    indexedKey: string,
+    options?: CreateNoteOptions,
+  ): Promise<CreateNoteResult>;
+  /** Remove explicitly selected, byte-identical duplicate frontmatter fields. */
+  repairDuplicateFrontmatterFields(
+    file: TFile,
+    fields: readonly string[],
+  ): Promise<{ removed: number }>;
+  /** Bind an unbound Literature Note without refreshing other metadata. */
+  bindLiteratureNote(
+    file: TFile,
+    options: { citekey: string; indexedKey: string },
+  ): Promise<{ updated: boolean }>;
+  /** Apply one hash-bound Source Note metadata migration prepared by an external operator. */
+  migrateLiteratureBundleMetadata(
+    file: TFile,
+    migration: LiteratureBundleMetadataMigration,
+  ): Promise<{ sha256: string }>;
   /** @see updateNote */
   updateNote(
     file: TFile,
@@ -482,6 +523,18 @@ export function createNoteFeature(deps: SyncRenderDeps): NoteFeature {
       deps.profile.ready,
     ]).then(() => {}),
     createNote: createAtGate,
+    createNoteByIndexedKey: async (indexedKey, options) => {
+      let item: Item | undefined;
+      {
+        using lease = await deps.db.acquireRead();
+        const parsed = resolveIndexedKeyLibrary(lease.client, indexedKey);
+        if (parsed) {
+          item = getItemsByKey(lease.client, parsed.libraryID, [parsed.key])[0];
+        }
+      }
+      if (!item) throw new Error("Zotero item not found");
+      return createAtGate(item, options);
+    },
     resolveCompanionNote: (indexedKey, options) =>
       resolveCompanionNote(ctx, indexedKey, options),
     resolveCreationProfile: (sources) => resolveCreationProfile(ctx, sources),
@@ -495,6 +548,12 @@ export function createNoteFeature(deps: SyncRenderDeps): NoteFeature {
     prepareProfileNote: (options) =>
       prepareProfileNote(ctx, options, createAtGate),
     prepareProfileSwitch: (file) => prepareProfileSwitch(ctx, file),
+    repairDuplicateFrontmatterFields: (file, fields) =>
+      repairDuplicateFrontmatterFields(ctx, file, fields),
+    bindLiteratureNote: (file, options) =>
+      bindLiteratureNote(ctx, file, options),
+    migrateLiteratureBundleMetadata: (file, migration) =>
+      migrateLiteratureBundleMetadata(ctx, file, migration),
     updateNote: (file, options) => updateNote(ctx, file, options),
     switchNoteProfile: (file, options) => switchNoteProfile(ctx, file, options),
     getImportedNotesForItem: (indexedKey) =>
@@ -863,6 +922,7 @@ async function createNote(
     settings,
     item,
     pdfPath: sourcePdf?.path,
+    approvedDecisionHash: options.placementDecisionHash,
   });
   const placedPath = contractSourcePath(placement);
   let { path, canSuffix } = placedPath
@@ -1035,6 +1095,249 @@ function resolvePlacedPdfImport(
         ? placedLink
         : attachmentImport.resolveLink(input),
   };
+}
+
+async function repairDuplicateFrontmatterFields(
+  ctx: NoteFeatureDeps,
+  file: TFile,
+  fields: readonly string[],
+): Promise<{ removed: number }> {
+  if (
+    fields.length === 0 ||
+    fields.some((field) => !/^[A-Za-z0-9_-]+$/.test(field))
+  ) {
+    throw new Error(
+      "Duplicate frontmatter repair requires explicit field names",
+    );
+  }
+  await ctx.app.vault.process(file, (content) =>
+    removeDuplicateFrontmatterFields(content, fields),
+  );
+  logger.info("Repaired duplicate Literature Note frontmatter", {
+    path: file.path,
+    fields: [...fields],
+  });
+  return { removed: fields.length };
+}
+
+function removeDuplicateFrontmatterFields(
+  content: string,
+  fields: readonly string[],
+): string {
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0];
+  if (!frontmatter) throw new Error("Literature Note has no frontmatter block");
+  let updated = frontmatter;
+  for (const field of fields) {
+    const lines =
+      updated.match(new RegExp(`^${field}:[^\\r\\n]*(?:\\r?\\n|$)`, "gm")) ??
+      [];
+    if (lines.length !== 2 || lines[0] !== lines[1]) {
+      throw new Error(
+        `Literature Note must have two identical ${field} fields`,
+      );
+    }
+    const second = updated.lastIndexOf(lines[1]);
+    updated =
+      updated.slice(0, second) + updated.slice(second + lines[1].length);
+  }
+  return updated + content.slice(frontmatter.length);
+}
+
+async function bindLiteratureNote(
+  ctx: NoteFeatureDeps,
+  file: TFile,
+  options: { citekey: string; indexedKey: string },
+): Promise<{ updated: boolean }> {
+  await ctx.noteIndex.whenIndexed();
+  const cache = ctx.app.metadataCache.getFileCache(file);
+  const frontmatter = cache?.frontmatter;
+  if (frontmatter?.[FIELD_CITEKEY] !== options.citekey) {
+    throw new Error(
+      "Literature Note citekey does not match the requested binding",
+    );
+  }
+  const currentKey = frontmatter[FIELD_ZOTERO_KEY];
+  if (currentKey !== undefined && currentKey !== options.indexedKey) {
+    throw new Error("Literature Note already has a different Zotero key");
+  }
+  if (currentKey === options.indexedKey) return { updated: false };
+
+  using lease = await ctx.db.acquireRead();
+  const parsed = resolveIndexedKeyLibrary(lease.client, options.indexedKey);
+  const citekey = parsed
+    ? getCitekeyByItemKey(lease.client, parsed.libraryID, parsed.key)
+    : null;
+  if (citekey !== options.citekey) {
+    throw new Error(
+      "Zotero item citation key does not match the requested binding",
+    );
+  }
+
+  await ctx.app.vault.process(file, (content) =>
+    insertZoteroKey(content, options.indexedKey),
+  );
+  logger.info("Bound Literature Note to Zotero item", {
+    path: file.path,
+    itemKey: options.indexedKey,
+  });
+  return { updated: true };
+}
+
+async function migrateLiteratureBundleMetadata(
+  ctx: NoteFeatureDeps,
+  file: TFile,
+  migration: LiteratureBundleMetadataMigration,
+): Promise<{ sha256: string }> {
+  if (migration.verifyCurrentZoteroIdentity) {
+    using lease = await ctx.db.acquireRead();
+    const parsed = resolveIndexedKeyLibrary(
+      lease.client,
+      migration.newIndexedKey,
+    );
+    const citekey = parsed
+      ? getCitekeyByItemKey(lease.client, parsed.libraryID, parsed.key)
+      : null;
+    if (citekey !== migration.newCitekey) {
+      throw new Error(
+        "Zotero item citation key does not match bundle migration",
+      );
+    }
+  }
+
+  let outputSha256 = "";
+  await ctx.app.vault.process(file, (content) => {
+    const sourceSha256 = createHash("sha256").update(content).digest("hex");
+    if (sourceSha256 !== migration.sourceSha256) {
+      throw new Error("Literature Note changed after bundle migration review");
+    }
+    const block = FRONTMATTER_BLOCK.exec(content)?.[0];
+    if (!block) throw new Error("Literature Note has no frontmatter block");
+    const parsedFrontmatter = parseYaml(
+      block.replace(/^---\r?\n/, "").replace(/\r?\n---(?:\r?\n+|$)$/, ""),
+    );
+    if (!parsedFrontmatter || typeof parsedFrontmatter !== "object") {
+      throw new Error("Literature Note frontmatter is not a mapping");
+    }
+    const frontmatter = parsedFrontmatter as Record<string, unknown>;
+    if (
+      frontmatter[FIELD_CITEKEY] !== migration.oldCitekey ||
+      frontmatter[FIELD_ZOTERO_KEY] !== migration.oldIndexedKey
+    ) {
+      throw new Error(
+        "Literature Note identity changed after bundle migration review",
+      );
+    }
+    const oldBundle = frontmatter.artifact_bundle;
+    if (migration.oldStoredDecisionHash !== undefined) {
+      if (
+        !oldBundle ||
+        typeof oldBundle !== "object" ||
+        (oldBundle as Record<string, unknown>)
+          .stored_placement_decision_hash !== migration.oldStoredDecisionHash
+      ) {
+        throw new Error(
+          "Literature Note placement changed after bundle migration review",
+        );
+      }
+    } else if (oldBundle !== undefined) {
+      throw new Error(
+        "Legacy Literature Note unexpectedly has bundle metadata",
+      );
+    }
+
+    const decision = migration.newArtifactBundle.placement_decision;
+    const storedHash =
+      migration.newArtifactBundle.stored_placement_decision_hash;
+    if (
+      !decision ||
+      typeof decision !== "object" ||
+      typeof storedHash !== "string"
+    ) {
+      throw new Error("Bundle migration metadata lacks a reviewed decision");
+    }
+    if (stableJsonSha256(decision) !== storedHash) {
+      throw new Error("Bundle migration decision hash does not match metadata");
+    }
+    if (
+      migration.newArtifactBundle.citekey !== migration.newCitekey ||
+      migration.newArtifactBundle.artifact_identity !==
+        migration.newCanonicalIdentity
+    ) {
+      throw new Error(
+        "Bundle migration metadata identity does not match request",
+      );
+    }
+
+    frontmatter[FIELD_CITEKEY] = migration.newCitekey;
+    frontmatter[FIELD_ZOTERO_KEY] = migration.newIndexedKey;
+    frontmatter.artifact_bundle = migration.newArtifactBundle;
+    if (migration.newAttachments) {
+      frontmatter["zt-attachments"] = [...migration.newAttachments];
+    }
+    if (migration.aliasesToAdd?.length) {
+      const aliases = Array.isArray(frontmatter.aliases)
+        ? [...frontmatter.aliases]
+        : [];
+      for (const alias of migration.aliasesToAdd) {
+        if (!aliases.includes(alias)) aliases.push(alias);
+      }
+      frontmatter.aliases = aliases;
+    }
+
+    let body = content.slice(block.length);
+    const replacements = [...(migration.bodyReplacements ?? [])].sort(
+      (left, right) => right.old.length - left.old.length,
+    );
+    for (const replacement of replacements) {
+      body = body.replaceAll(replacement.old, replacement.new);
+    }
+    const updated = `---\n${stringifyYamlDocument(frontmatter)}---\n${body.replace(/^\r?\n*/, "")}`;
+    outputSha256 = createHash("sha256").update(updated).digest("hex");
+    return updated;
+  });
+  logger.info("Migrated Literature Note bundle metadata", {
+    path: file.path,
+    oldCitekey: migration.oldCitekey,
+    newCitekey: migration.newCitekey,
+  });
+  return { sha256: outputSha256 };
+}
+
+function stableJsonSha256(value: unknown): string {
+  const canonical = JSON.stringify(value, (_key, child: unknown) => {
+    if (!child || typeof child !== "object" || Array.isArray(child))
+      return child;
+    return Object.fromEntries(
+      Object.entries(child as Record<string, unknown>).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0,
+      ),
+    );
+  }).replaceAll(
+    /[^\x00-\x7F]/g,
+    (character) =>
+      `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+  return createHash("sha256").update(canonical).digest("hex");
+}
+
+function insertZoteroKey(content: string, indexedKey: string): string {
+  const frontmatter = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(content)?.[0];
+  if (!frontmatter) throw new Error("Literature Note has no frontmatter block");
+  const citekeyLines =
+    frontmatter.match(/^citekey:[^\r\n]*(?:\r?\n|$)/gm) ?? [];
+  if (citekeyLines.length !== 1) {
+    throw new Error("Literature Note must have one top-level citekey field");
+  }
+  if (/^zotero-key:/m.test(frontmatter)) {
+    throw new Error("Literature Note already contains a Zotero key field");
+  }
+  const citekeyLine = citekeyLines[0];
+  const eol = citekeyLine.endsWith("\r\n") ? "\r\n" : "\n";
+  const updated = frontmatter.replace(
+    citekeyLine,
+    `${citekeyLine.replace(/\r?\n$/, "")}${eol}zotero-key: ${indexedKey}${eol}`,
+  );
+  return updated + content.slice(frontmatter.length);
 }
 
 async function updateNote(

@@ -200,6 +200,33 @@ describe("adapter placement boundary", () => {
     );
   });
 
+  it("uses an exact externally approved decision without reopening review", async () => {
+    const { end } = mockPlacementOutputs(
+      JSON.stringify(reviewContract()),
+      JSON.stringify(readyContract()),
+    );
+    const reviewPlacement = vi.fn();
+
+    const result = await resolveAdapterPlacement({
+      app: appFixture(),
+      settings: { ...defaults, "lit-management.placement-enabled": true },
+      item: itemFixture(),
+      approvedDecisionHash: "decision-hash",
+      reviewPlacement,
+    });
+
+    expect(reviewPlacement).not.toHaveBeenCalled();
+    expect(JSON.parse(end.mock.calls[1]![0])).toMatchObject({
+      placementApproval: {
+        decisionHash: "decision-hash",
+        reviewer: "zotlit:user",
+      },
+    });
+    expect(contractSourcePath(result)).toBe(
+      "library/key--frozen/Source - key.md",
+    );
+  });
+
   it("stops creation when the placement review is cancelled", async () => {
     mockPlacementOutputs(JSON.stringify(reviewContract()));
 

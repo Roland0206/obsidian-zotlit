@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { dirname } from "node:path/posix";
-import { FileSystemAdapter, normalizePath } from "obsidian";
-import type { Vault } from "obsidian";
+import { FileSystemAdapter, Modal, normalizePath, Setting } from "obsidian";
+import type { App, Vault } from "obsidian";
 import * as v from "valibot";
 
 import type { Attachment, Item } from "@zotlit/db";
 import { attachmentAbsPath } from "@zotlit/db/path";
 
+import * as m from "@/lib/i18n/generated/messages";
 import { getLogger } from "@/lib/log";
 import { attachmentSourceOrigin } from "@/services/attachment-import/service";
 import type { SourceOrigin } from "@/services/attachment-import/service";
@@ -14,24 +15,44 @@ import type { Settings } from "@/services/settings/schema";
 import type { ZoteroPrefService } from "@/services/zotero-pref/service";
 
 const logger = getLogger("adapter-placement");
-export interface AdapterPlacementContract {
-  state: "ready" | "fallback";
-  mode: "canonical_bundle" | "staging_inbox";
-  paths: {
-    sourceNote?: string | null;
-    pdf?: string | null;
-    sourceResources?: string | null;
-  };
-  permissions?: {
-    copyPdf?: boolean;
-    writeSourceNote?: boolean;
-    overwriteSourceNote?: boolean;
-    writeSourceResources?: boolean;
-    writeSummary?: boolean;
+interface AdapterPlacementPaths {
+  bundle?: string | null;
+  sourceNote?: string | null;
+  pdf?: string | null;
+  sourceResources?: string | null;
+}
+
+interface AdapterPlacementProposal {
+  decisionHash: string;
+  storageSlug?: string | null;
+  paths: AdapterPlacementPaths;
+}
+
+interface AdapterPlacementBase {
+  mode: "canonical_bundle";
+  decisionHash: string;
+  paths: AdapterPlacementPaths;
+  permissions: {
+    copyPdf: boolean;
+    writeSourceNote: boolean;
+    overwriteSourceNote: boolean;
+    writeSourceResources: boolean;
+    writeSummary: false;
   };
   artifactBundleFrontmatter?: Record<string, unknown> | null;
-  fallback?: { reasons?: string[] } | null;
 }
+
+export type AdapterPlacementContract = AdapterPlacementBase &
+  (
+    | { state: "ready"; proposal?: never }
+    | { state: "review_required"; proposal: AdapterPlacementProposal }
+    | {
+        state: "blocked";
+        proposal?: never;
+        blockers: string[];
+        conflicts: unknown[];
+      }
+  );
 
 const vaultRelativePath = v.pipe(
   v.string(),
@@ -48,28 +69,85 @@ const vaultRelativePath = v.pipe(
   ),
 );
 
-const placementSchema = v.object({
-  schemaVersion: v.literal(1),
+const optionalPlacementPath = v.optional(v.nullable(vaultRelativePath));
+const placementPathsSchema = v.object({
+  bundle: optionalPlacementPath,
+  sourceNote: optionalPlacementPath,
+  pdf: optionalPlacementPath,
+  sourceResources: optionalPlacementPath,
+});
+const readyPlacementSchema = v.object({
+  schemaVersion: v.literal(2),
   adapter: v.literal("zotlit"),
   action: v.literal("upsert_source"),
   state: v.literal("ready"),
   mode: v.literal("canonical_bundle"),
-  paths: v.object({
-    sourceNote: vaultRelativePath,
-    pdf: v.optional(v.nullable(vaultRelativePath)),
-    sourceResources: v.optional(v.nullable(vaultRelativePath)),
-  }),
+  decisionHash: v.string(),
+  paths: v.intersect([
+    placementPathsSchema,
+    v.object({ sourceNote: vaultRelativePath }),
+  ]),
   permissions: v.object({
     writeSourceNote: v.literal(true),
     overwriteSourceNote: v.literal(false),
-    copyPdf: v.optional(v.boolean()),
-    writeSourceResources: v.optional(v.boolean()),
-    writeSummary: v.optional(v.literal(false)),
+    copyPdf: v.boolean(),
+    writeSourceResources: v.boolean(),
+    writeSummary: v.literal(false),
   }),
   artifactBundleFrontmatter: v.optional(
     v.nullable(v.record(v.string(), v.unknown())),
   ),
 });
+const reviewPlacementSchema = v.object({
+  schemaVersion: v.literal(2),
+  adapter: v.literal("zotlit"),
+  action: v.literal("upsert_source"),
+  state: v.literal("review_required"),
+  mode: v.literal("canonical_bundle"),
+  decisionHash: v.string(),
+  paths: placementPathsSchema,
+  permissions: v.object({
+    writeSourceNote: v.literal(false),
+    overwriteSourceNote: v.literal(false),
+    copyPdf: v.literal(false),
+    writeSourceResources: v.literal(false),
+    writeSummary: v.literal(false),
+  }),
+  proposal: v.object({
+    decisionHash: v.string(),
+    storageSlug: v.optional(v.nullable(v.string())),
+    paths: v.intersect([
+      placementPathsSchema,
+      v.object({
+        bundle: vaultRelativePath,
+        sourceNote: vaultRelativePath,
+      }),
+    ]),
+  }),
+});
+const blockedPlacementSchema = v.object({
+  schemaVersion: v.literal(2),
+  adapter: v.literal("zotlit"),
+  action: v.literal("upsert_source"),
+  state: v.literal("blocked"),
+  mode: v.literal("canonical_bundle"),
+  decisionHash: v.string(),
+  paths: placementPathsSchema,
+  permissions: v.object({
+    writeSourceNote: v.literal(false),
+    overwriteSourceNote: v.literal(false),
+    copyPdf: v.literal(false),
+    writeSourceResources: v.literal(false),
+    writeSummary: v.literal(false),
+  }),
+  blockers: v.array(v.string()),
+  conflicts: v.array(v.unknown()),
+});
+const placementSchema = v.variant("state", [
+  readyPlacementSchema,
+  reviewPlacementSchema,
+  blockedPlacementSchema,
+]);
 
 export function parseAdapterPlacementContract(
   value: unknown,
@@ -82,11 +160,16 @@ export async function resolveAdapterPlacement({
   settings,
   item,
   pdfPath,
+  reviewPlacement = requestAdapterPlacementReview,
 }: {
-  app: { vault: Pick<Vault, "adapter"> };
+  app: App & { vault: Pick<Vault, "adapter"> };
   settings: Readonly<Settings>;
   item: Item;
   pdfPath?: string | null;
+  reviewPlacement?: (
+    app: App,
+    proposal: AdapterPlacementProposal,
+  ) => Promise<boolean>;
 }): Promise<AdapterPlacementContract | null> {
   if (!settings["lit-management.placement-enabled"]) return null;
   const vaultRoot = vaultBasePath(app);
@@ -97,7 +180,7 @@ export async function resolveAdapterPlacement({
   }
 
   const request = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     adapter: "zotlit",
     action: "upsert_source",
     roles: ["source_note", "pdf", "source_resources"],
@@ -114,22 +197,42 @@ export async function resolveAdapterPlacement({
   };
 
   try {
-    const stdout = await execPlacement({
-      command: settings["lit-management.command"],
-      args: [
-        "adapter-placement",
-        "--config",
-        settings["lit-management.config"],
-      ],
-      input: JSON.stringify(request),
-      cwd: vaultRoot,
+    const initial = await executePlacementRequest({
+      settings,
+      request,
+      vaultRoot,
     });
-    return parseAdapterPlacementContract(JSON.parse(stdout));
+    if (initial.state === "ready") return initial;
+    if (initial.state === "blocked") {
+      throw new Error(initial.blockers.join("; "));
+    }
+    if (initial.proposal.decisionHash !== initial.decisionHash) {
+      throw new Error("lit-management placement proposal hash is inconsistent");
+    }
+    const approved = await reviewPlacement(app, initial.proposal);
+    if (!approved) throw new Error("lit-management placement review cancelled");
+    const approvedContract = await executePlacementRequest({
+      settings,
+      request: {
+        ...request,
+        placementApproval: {
+          decisionHash: initial.decisionHash,
+          reviewer: "zotlit:user",
+        },
+      },
+      vaultRoot,
+    });
+    if (approvedContract.state !== "ready") {
+      throw new Error("lit-management did not accept the reviewed placement");
+    }
+    return approvedContract;
   } catch (error) {
     logger.warn("lit-management adapter-placement failed", { error });
-    throw new Error("lit-management placement failed; note creation stopped", {
-      cause: error,
-    });
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(
+      `lit-management placement failed; note creation stopped${detail}`,
+      { cause: error },
+    );
   }
 }
 
@@ -209,6 +312,79 @@ function isPdfAttachment(attachment: Attachment): boolean {
     attachment.contentType === "application/pdf" ||
     attachment.path?.toLowerCase().endsWith(".pdf") === true
   );
+}
+
+async function executePlacementRequest({
+  settings,
+  request,
+  vaultRoot,
+}: {
+  settings: Readonly<Settings>;
+  request: object;
+  vaultRoot: string;
+}): Promise<AdapterPlacementContract> {
+  const stdout = await execPlacement({
+    command: settings["lit-management.command"],
+    args: ["adapter-placement", "--config", settings["lit-management.config"]],
+    input: JSON.stringify(request),
+    cwd: vaultRoot,
+  });
+  return parseAdapterPlacementContract(JSON.parse(stdout));
+}
+
+async function requestAdapterPlacementReview(
+  app: App,
+  proposal: AdapterPlacementProposal,
+): Promise<boolean> {
+  const modal = new AdapterPlacementReviewModal(app, proposal);
+  modal.open();
+  return modal.result;
+}
+
+class AdapterPlacementReviewModal extends Modal {
+  readonly #proposal: AdapterPlacementProposal;
+  readonly #decision = Promise.withResolvers<boolean>();
+  readonly result = this.#decision.promise;
+  #settled = false;
+
+  constructor(app: App, proposal: AdapterPlacementProposal) {
+    super(app);
+    this.#proposal = proposal;
+  }
+
+  override onOpen(): void {
+    this.setTitle(m.modal_adapter_placement_title());
+    this.contentEl.createEl("p", {
+      text: m.modal_adapter_placement_description(),
+    });
+    this.contentEl.createEl("code", {
+      text: this.#proposal.paths.bundle ?? "",
+    });
+    new Setting(this.contentEl)
+      .addButton((button) =>
+        button
+          .setButtonText(m.modal_adapter_placement_approve())
+          .setCta()
+          .onClick(() => this.#finish(true)),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText(m.modal_adapter_placement_cancel())
+          .onClick(() => this.#finish(false)),
+      );
+  }
+
+  override onClose(): void {
+    this.#finish(false, false);
+    this.contentEl.empty();
+  }
+
+  #finish(value: boolean, close = true): void {
+    if (this.#settled) return;
+    this.#settled = true;
+    this.#decision.resolve(value);
+    if (close) this.close();
+  }
 }
 
 function execPlacement({

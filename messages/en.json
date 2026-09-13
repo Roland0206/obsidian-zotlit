@@ -1,6 +1,10 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "profile_match_unmatched": "No profile matched.",
+  "modal_adapter_placement_title": "Review literature bundle",
+  "modal_adapter_placement_description": "ZotLit will create the canonical literature bundle at this path:",
+  "modal_adapter_placement_approve": "Create bundle",
+  "modal_adapter_placement_cancel": "Cancel",
   "batch_profile_recovery_help": "The selected profile is unavailable. Choose a profile to create these notes.",
   "profile_match_absent": "Not auto-selected",
   "profile_match_all": "Matches every item",

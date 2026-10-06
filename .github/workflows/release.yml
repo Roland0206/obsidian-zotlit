@@ -17,6 +17,7 @@ concurrency:
 
 jobs:
   obsidian:
+    if: github.repository == 'aidenlx/zotlit'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -149,6 +150,7 @@ jobs:
             apps/obsidian/dist/resources/*
 
   zotero:
+    if: github.repository == 'aidenlx/zotlit'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   gate:
+    if: github.repository == 'aidenlx/zotlit'
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.check.outputs.deploy }}
@@ -84,7 +85,7 @@ jobs:
 
   deploy:
     needs: gate
-    if: needs.gate.outputs.deploy == 'true'
+    if: github.repository == 'aidenlx/zotlit' && needs.gate.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     env:
       # The wrangler environment this branch deploys: `beta` for Pre-release
